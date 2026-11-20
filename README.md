@@ -1,3 +1,19 @@
+# BossDot
+
+BossDot 是基于 [BossClaw v2.6.3](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.3) 的本地求职工作台，包含内置浏览器、线上资料读取、简历定制和可选 MCP 控制。原版文档保留在下方，许可证和署名见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+
+在 Windows 上安装 Node.js 22 或更新版本并运行以下命令。
+
+```powershell
+Set-Location desktop-app
+npm ci
+npm run package:dir
+```
+
+回到仓库根目录，运行 `启动BossDot.cmd`。需要通过 MCP 操作时运行 `启动BossDot-Agent.cmd`。仓库的 `.mcp.json` 指向本地构建的 BossDot。
+
+在仓库根目录可执行 `node qa/run-electron-ui-smoke.cjs` 和 `node qa/run-bossdot-chrome-error.cjs`，使用打包程序和独立的临时数据目录做 Windows 回归。
+
 <div align="center">
 
 # BossClaw

@@ -1,7 +1,7 @@
 {
-  "name": "bossclaw-desktop",
+  "name": "bossdot",
   "version": "2.6.3",
-  "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
+  "description": "BossDot · 本地求职投递工作台",
   "private": true,
   "author": "YanQuan",
   "license": "Apache-2.0",
@@ -54,10 +54,10 @@
     "test:camo-progress": "python -m unittest discover -s camoufox/tests -p \"test_progress_resume.py\""
   },
   "build": {
-    "appId": "com.bossclaw.desktop",
-    "productName": "BossClaw",
-    "copyright": "Copyright © 2026 BossClaw",
-    "icon": "resources/icon.ico",
+    "appId": "local.bossdot.desktop",
+    "productName": "BossDot",
+    "copyright": "Based on BossClaw © 2026 YanQuan-dozzy",
+    "icon": "resources/bossdot.ico",
     "afterPack": "build/after-pack-win-icon.js",
     "publish": null,
     "asar": true,
@@ -80,6 +80,8 @@
       "!camoufox/tests/**"
     ],
     "extraResources": [
+      { "from": "../LICENSE", "to": "licenses/BossClaw-LICENSE.txt" },
+      { "from": "../NOTICE", "to": "licenses/BossClaw-NOTICE.txt" },
       {
         "from": "resources/docs/使用前必读.md",
         "to": "docs/使用前必读.md"
@@ -90,6 +92,7 @@
         "nsis",
         "portable"
       ],
+      "executableName": "BossDot",
       "signAndEditExecutable": false,
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
@@ -98,7 +101,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "BossClaw"
+      "shortcutName": "BossDot"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
@@ -108,7 +111,7 @@
         "dmg",
         "zip"
       ],
-      "icon": "resources/icon.png",
+      "icon": "resources/bossdot.png",
       "category": "public.app-category.productivity",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
@@ -120,23 +123,26 @@
         "AppImage",
         "deb"
       ],
-      "icon": "resources/icon.png",
+      "icon": "resources/bossdot.png",
       "category": "Office",
       "maintainer": "YanQuan <yanquan@bossclaw.dev>",
-      "synopsis": "BossClaw 求职投递助手",
+      "synopsis": "BossDot",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "asarUnpack": [
       "camoufox/**",
-      "resources/icon.ico",
-      "resources/icon.png",
+      "electron/preload/liepin-im.cjs",
+      "resources/bossdot.ico",
+      "resources/bossdot.png",
       "node_modules/sherpa-onnx-*/**"
     ]
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
+    "@langchain/langgraph": "1.7.5",
     "antd": "^5.21.6",
     "cloakbrowser": "^0.5.7",
+    "jszip": "3.10.2",
     "mammoth": "^1.8.0",
     "playwright-core": "1.62",
     "react": "^18.3.1",

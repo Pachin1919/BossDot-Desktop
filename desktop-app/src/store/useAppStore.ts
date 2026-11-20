@@ -84,6 +84,9 @@ export const ACTION_SOURCE_PRIORITY: Record<string, number> = {
 /** 设置页分区 key（与 Settings.tsx 的 Tabs items 一一对应，唯一权威） */
 export type SettingsTabKey = 'appearance' | 'platforms' | 'criteria' | 'llm' | 'engine' | 'speech' | 'data';
 
+export const BROWSER_ZOOM_LEVELS = [50, 60, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200] as const;
+type BrowserZoomPercent = (typeof BROWSER_ZOOM_LEVELS)[number];
+
 interface AppState {
   theme: ThemeMode;
   activeRoute: RouteKey;
@@ -98,6 +101,8 @@ interface AppState {
   /** 各平台登录态（boss/猎聘/智联/51job），运行时探测结果，不持久化；null = 检测中 */
   platformLogins: PlatformLogins;
   sidebarCollapsed: boolean;
+  browserZoomPercent: BrowserZoomPercent;
+  setBrowserZoomPercent: (zoom: BrowserZoomPercent) => void;
   /** 侧边栏底部动态动作状态（与 StatusBar 的 OpenClaw 状态区分开） */
   currentAction: { text: string; source: string | null };
   setTheme: (t: ThemeMode) => void;
@@ -152,6 +157,8 @@ export const useAppStore = create<AppState>()(
         bossLoggedIn: null,
         platformLogins: Object.fromEntries(PLATFORM_IDS.map((p) => [p, null])) as PlatformLogins,
         sidebarCollapsed: false,
+        browserZoomPercent: 90,
+        setBrowserZoomPercent: (zoom) => set({ browserZoomPercent: zoom }),
         engineStatus: 'stopped',
         currentAction: { text: '等待中', source: null },
         browserLoginRequest: null,

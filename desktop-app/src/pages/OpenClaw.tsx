@@ -13,9 +13,9 @@ import { ApiOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, Fil
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/lib/electronApi';
 
+import { BRIDGE_BASE_URL } from '@/lib/bridgeClient';
+
 const { Paragraph, Text } = Typography;
-const BRIDGE_PORT = 18765;
-const base = `http://127.0.0.1:${BRIDGE_PORT}`;
 
 export default function OpenClaw() {
   const [status, setStatus] = useState<any>(null);
@@ -29,7 +29,7 @@ export default function OpenClaw() {
 
   const call = async (route: string, method = 'GET', body?: any) => {
     // C-2：令牌经主进程 IPC 读取运行时随机令牌，改为请求头传递（不再硬编码 / 不走 URL query）
-    const url = `${base}${route}`;
+    const url = `${BRIDGE_BASE_URL}${route}`;
     // P30：桥接 HTTP 超时兜底——本地桥半开（端口占用但无响应）时避免请求永久挂起
     const headers: Record<string, string> = { 'X-Bossclaw-Token': await electronApi.bridge.token() };
     if (body) headers['Content-Type'] = 'application/json';

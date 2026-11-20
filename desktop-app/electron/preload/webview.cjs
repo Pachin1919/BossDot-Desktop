@@ -335,6 +335,8 @@ ipcRenderer.on('force-resize', () => { try { window.dispatchEvent(new Event('res
 
 let lastNavSig = ''; // 导航状态变化去重：内容未变则不重复上报（BOSS 页 DOM 高频变动时防止每帧 IPC 风暴）
 function reportNav() {
+  // 会话帧 preload 也会运行在 iframe；标签地址栏只反映 guest 的顶层文档。
+  if (!process.isMainFrame) return;
   try {
     const canGoBack = spaIndex > 0;
     const canGoForward = spaIndex >= 0 && spaIndex < spaHistory.length - 1;

@@ -920,7 +920,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             </div>
             <div className="sg-item">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <span className="field-label">随系统启动自动打开 BossClaw</span>
+                <span className="field-label">随系统启动自动打开 BossDot</span>
                 <Switch
                   checked={Boolean(autostart)}
                   loading={autostart === null}
@@ -929,7 +929,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              开启后，Windows 登录时将自动启动 BossClaw（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
+              开启后，Windows 登录时将自动启动 BossDot（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
             </Paragraph>
           </div>
 
@@ -2052,7 +2052,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                         onClick={() => onDeleteSkill(sk.id, sk.name)}
                       />
                     )}
-                    <Switch checked={sk.enabled} onChange={(v) => onToggleSkill(sk.id, v)} />
+                    <Switch aria-label={sk.name} checked={sk.enabled} onChange={(v) => onToggleSkill(sk.id, v)} />
                   </Space>
                 </div>
               </div>
@@ -2309,7 +2309,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </Space>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0, fontSize: 13 }}>
-              OpenClaw 后端服务提供 OCR、简历文本解析与任务恢复等本地扩展能力（端口 127.0.0.1:18765）。
+              OpenClaw 后端服务提供 OCR、简历文本解析与任务恢复等本地扩展能力。
             </Paragraph>
           </div>
         </div>

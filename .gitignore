@@ -25,6 +25,10 @@ coverage/
 # --- desktop-app 环境 / 产物 / 第三方依赖（clone 后由脚本自行安装）---
 desktop-app/dist/
 desktop-app/release/
+/desktop-app/release-*/
+/qa/electron-output/
+/.codex/
+/data/
 desktop-app/tmp/
 # 简历模板原型 / PDF 预览 / 截图等开发草稿（产线模板已内联进 src/lib/bossclaw/resumePdf.ts）
 desktop-app/scripts-tmp/

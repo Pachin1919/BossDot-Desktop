@@ -9,6 +9,8 @@
 // 安全口径：本句柄只暴露「只读探索 + 半自动预填 + 触发自动投递」能力；真正的发送校验由
 // webview preload 的 domApply / Workbench 引擎执行（招呼语非空、外部网申跳过、气泡确认、
 // 风控即停），controlRuntime 只在 executionMode='auto' 时才允许触发发送。
+import type { BossOnlineProfileResult } from '@/lib/bossclaw/bossOnlineProfile';
+
 export interface BrowserTabInfo {
   id: string;
   url: string;
@@ -58,6 +60,7 @@ export interface BrowserHandle {
   jobCard: (encryptJobId: string) => Promise<unknown>;
   /** 读取当前/指定 tab 的页面文本与列表卡摘要（只读） */
   readPage: (tabId?: string) => Promise<BrowserPageRead>;
+  readBossOnlineProfile?: () => Promise<BossOnlineProfileResult>;
   /** 触发 preload 的 dom-dump 诊断（只读；同步触发，诊断结果走日志区） */
   domDump: (tabId?: string) => unknown;
   /** 半自动：打开沟通并预填招呼语草稿，不发送 */

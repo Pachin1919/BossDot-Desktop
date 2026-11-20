@@ -26,11 +26,11 @@ body {
    约定：页面底色/边框/阴影用中性 slate 灰族；品牌青绿只用于激活、选中、主操作等强调点，
    避免整界面泛绿造成的层级不清。浅/深两套与 theme.ts 的 cssVars 保持同源。 */
 :root {
-  --bg: #F5F6F8;
+  --bg: #D7EDE0;
   --bg-elevated: #FFFFFF;
-  --fg: #0F172A;
+  --fg: #123129;
   --fg-muted: #475569;
-  --fg-subtle: #94A3B8;
+  --fg-subtle: #526572;
   --border: rgba(15, 23, 42, 0.09);
   --border-strong: rgba(15, 23, 42, 0.16);
   --border-brand: rgba(13, 148, 136, 0.38);
@@ -102,7 +102,7 @@ body {
 
 html[data-theme='dark'],
 .dark {
-  --bg: #0B0F17;
+  --bg: #101F1B;
   --bg-elevated: #141A24;
   --fg: #F3F4F6;
   --fg-muted: #9CA3AF;
@@ -156,6 +156,7 @@ html[data-theme='dark'],
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   user-select: none;
+  app-region: drag;
   z-index: var(--z-header);
 }
 .title-bar-drag {
@@ -164,7 +165,6 @@ html[data-theme='dark'],
   align-items: center;
   gap: 10px;
   height: 100%;
-  -webkit-app-region: drag;
 }
 .title-bar-icon { width: 24px; height: 24px; border-radius: 6px; }
 .title-bar-name { font-size: 16px; font-weight: 700; color: var(--fg); letter-spacing: 0.3px; }
@@ -187,7 +187,9 @@ html[data-theme='dark'],
   display: flex;
   align-items: center;
   gap: 12px;
-  -webkit-app-region: no-drag;
+}
+.title-bar-actions button {
+  app-region: no-drag;
 }
 .theme-seg {
   display: inline-flex;
@@ -718,6 +720,25 @@ html[data-theme='dark'],
   gap: 4px;
   overflow-x: auto;
   overflow-y: hidden;
+}
+.browser-zoom {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+}
+.browser-zoom .browser-zoom-value {
+  min-width: 44px;
+  padding-inline: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.boss-online-profile-text {
+  max-height: 34vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .browser-tab {
   flex: 0 0 auto;

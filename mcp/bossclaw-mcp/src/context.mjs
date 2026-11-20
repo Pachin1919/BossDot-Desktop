@@ -18,6 +18,10 @@ const __dirname = path.dirname(__filename);
 
 /** mcp/bossclaw-mcp/src → mcp/bossclaw-mcp → mcp → <开发仓库根> */
 const DEV_REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const identity = JSON.parse(fs.readFileSync(path.join(DEV_REPO_ROOT, 'desktop-app', 'resources', 'app-identity.json'), 'utf8'));
+export const APP_DIR_NAME = identity.productName;
+export const CAMOUFOX_PORT = identity.camoufoxPort;
+const INSTALLED_EXE_NAME = `${APP_DIR_NAME}.exe`;
 
 const isWin = process.platform === 'win32';
 
@@ -25,9 +29,9 @@ const isWin = process.platform === 'win32';
 function installedAppRootCandidates() {
   return [
     process.env.BOSSCLAW_INSTALL_DIR,
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'BossClaw') : '',
-    process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, 'BossClaw') : '',
-    process.env['PROGRAMFILES(X86)'] ? path.join(process.env['PROGRAMFILES(X86)'], 'BossClaw') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', APP_DIR_NAME) : '',
+    process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, APP_DIR_NAME) : '',
+    process.env['PROGRAMFILES(X86)'] ? path.join(process.env['PROGRAMFILES(X86)'], APP_DIR_NAME) : '',
   ].filter(Boolean);
 }
 
@@ -35,7 +39,7 @@ function installedAppRootCandidates() {
 function detectInstalledRootSync() {
   for (const root of installedAppRootCandidates()) {
     try {
-      if (fs.statSync(path.join(root, 'BossClaw.exe')).isFile()) return root;
+      if (fs.statSync(path.join(root, INSTALLED_EXE_NAME)).isFile()) return root;
     } catch {
       /* 继续 */
     }
@@ -61,7 +65,7 @@ export const MODE = process.env.BOSSCLAW_REPO
   ? 'custom'
   : (() => {
       try {
-        return fs.statSync(path.join(REPO_ROOT, 'BossClaw.exe')).isFile() ? 'installed' : 'dev';
+        return fs.statSync(path.join(REPO_ROOT, INSTALLED_EXE_NAME)).isFile() ? 'installed' : 'dev';
       } catch {
         return 'dev';
       }
@@ -101,34 +105,21 @@ function resolveDesktopDir() {
 
 export const DESKTOP_DIR = resolveDesktopDir();
 
-/** Electron 的 app.setName('BossClaw')（electron/main.cjs:283）决定 userData 目录名 */
-const APP_DIR_NAME = 'BossClaw';
-
 function roamingDir() {
   if (isWin) return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support');
   return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 }
 
-/** userData 解析：显式环境变量 > 有历史遗留的候选目录 > 标准路径 */
+/** userData 解析：显式目录优先，默认使用本产品的 Electron 目录。 */
 function resolveUserData() {
-  if (process.env.BOSSCLAW_USERDATA) return process.env.BOSSCLAW_USERDATA;
-  const base = roamingDir();
-  const candidates = [path.join(base, APP_DIR_NAME), path.join(base, 'bossclaw-desktop')];
-  for (const c of candidates) {
-    try {
-      if (fs.statSync(c).isDirectory()) return c;
-    } catch {
-      /* 不存在则继续 */
-    }
-  }
-  return candidates[0];
+  return process.env.BOSSCLAW_USERDATA || path.join(roamingDir(), APP_DIR_NAME);
 }
 
 export const USERDATA_DIR = resolveUserData();
 export const HOME_DIR = os.homedir();
 /** 引擎/登录态数据目录（camoufox cookies、engine-state.json） */
-export const BOSSCLAW_HOME = path.join(HOME_DIR, '.bossclaw');
+export const BOSSCLAW_HOME = path.join(USERDATA_DIR, 'engines');
 
 /**
  * 控制桥信息文件的**候选路径**（读取顺序即优先级）。
@@ -147,7 +138,9 @@ function controlBridgeCandidates() {
   const explicit = process.env.BOSSCLAW_CONTROL_BRIDGE_FILE;
   if (explicit) list.push(explicit);
   list.push(path.join(USERDATA_DIR, 'control-bridge.json'));
-  list.push(path.join(os.tmpdir(), 'bossclaw-control-bridge.json'));
+  if (!explicit && !process.env.BOSSCLAW_USERDATA) {
+    list.push(path.join(os.tmpdir(), 'bossdot-control-bridge.json'));
+  }
   // 去重（BOSSCLAW_CONTROL_BRIDGE_FILE 恰好等于标准路径时）
   return [...new Set(list)];
 }
@@ -164,7 +157,7 @@ export const PATHS = {
   bossclawHome: BOSSCLAW_HOME,
   controlBridgeFile: CONTROL_BRIDGE_FILE,
   electronBin: MODE === 'installed'
-    ? path.join(REPO_ROOT, 'BossClaw.exe')
+    ? path.join(REPO_ROOT, INSTALLED_EXE_NAME)
     : path.join(DESKTOP_DIR, 'node_modules', 'electron', 'dist', isWin ? 'electron.exe' : 'electron'),
   distDir: path.join(DESKTOP_DIR, 'dist'),
   releaseDir: path.join(DESKTOP_DIR, 'release'),
@@ -182,8 +175,6 @@ export const PATHS = {
 // ===========================================================================
 // 安装版应用探测（打包后的 BossClaw.exe，如 <安装目录>\BossClaw.exe）
 // ===========================================================================
-
-const INSTALLED_EXE_NAME = 'BossClaw.exe';
 
 /** electron-builder 常见安装位置（自定义目录经 BOSSCLAW_INSTALL_DIR；注册表卸载项兜底） */
 function installedExeCandidates() {
@@ -221,7 +212,7 @@ async function resolveInstalledExeFromRegistry() {
     const subKeys = keysText.split(/\r?\n/).map((s) => s.trim()).filter((s) => /^HKEY_/i.test(s));
     for (const key of subKeys) {
       const name = await regValue(key, 'DisplayName');
-      if (!name || !/boss-?claw/i.test(name)) continue;
+      if (!name || name.toLowerCase() !== APP_DIR_NAME.toLowerCase()) continue;
       const loc = await regValue(key, 'InstallLocation');
       if (loc) {
         const exe = path.join(loc, INSTALLED_EXE_NAME);
@@ -250,7 +241,7 @@ export async function resolveInstalledExe() {
   const envExe = process.env.BOSSCLAW_EXE;
   if (envExe) {
     try {
-      if (fs.statSync(envExe).isFile()) return envExe;
+      if (fs.statSync(envExe).isFile()) return path.resolve(envExe);
     } catch { /* 继续探测 */ }
   }
   for (const c of installedExeCandidates()) {
@@ -369,7 +360,7 @@ export function listProcesses() {
       });
       return;
     }
-    execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+    execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024, timeout: 3000 }, (err, stdout) => {
       if (err) return resolve([]);
       const rows = String(stdout)
         .split(/\r?\n/)
@@ -497,9 +488,9 @@ export function bridgeHint() {
   return [
     `应用内控制桥当前不可用。启用方式（三选一）：`,
     `  1) 用 bossclaw_app_start 启动（默认带 BOSSCLAW_CONTROL=1），或`,
-    `  2) 让用户运行仓库根的 start-bossclaw.cmd（本地启动器默认已开启 agent 桥），或`,
+    `  2) 让用户运行仓库根的 启动BossDot-Agent.cmd，或`,
     `  3) 手动以 BOSSCLAW_CONTROL=1 启动 Electron。`,
-    `关闭方式：start-bossclaw.cmd --no-agent，或 BOSSCLAW_CONTROL=0 / --no-control-bridge。`,
+    `常规启动使用 启动BossDot.cmd。`,
     `已查找桥信息文件（依次）：`,
     ...CONTROL_BRIDGE_FILES.map((f, i) => `  ${i + 1}) ${f}`),
   ].join('\n');

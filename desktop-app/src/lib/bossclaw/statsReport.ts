@@ -209,7 +209,7 @@ export function buildStatsReportHtml(snapshot: StatsSnapshot, appVersion?: strin
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>BossClaw 数据统计报表</title>
+<title>BossDot 数据统计报表</title>
 <style>${BASE_CSS}</style>
 </head>
 <body>
@@ -323,7 +323,7 @@ export function buildStatsReportHtml(snapshot: StatsSnapshot, appVersion?: strin
   <footer class="rf">
     ${s.notes.map((n) => `<p>· ${esc(n)}</p>`).join('')}
     <p>· 报表不含岗位级明细（含招聘方信息），需要逐条数据请使用「导出 → 岗位明细 CSV」。</p>
-    <p>BossClaw${appVersion ? ` v${esc(appVersion)}` : ''} · 报表由本地数据生成，未上传任何内容。</p>
+    <p>BossDot${appVersion ? ` v${esc(appVersion)}` : ''} · 报表由本地数据生成，未上传任何内容。</p>
   </footer>
 
 </div>

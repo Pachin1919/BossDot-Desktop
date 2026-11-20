@@ -48,6 +48,7 @@ export interface ResumeDocContact {
 export interface ResumeDocData {
   contact: ResumeDocContact;
   modules: ResumeDocModule[];
+  language?: 'zh' | 'en';
   /** 个人照片 data URL（base64，JPEG/PNG）；可选，未上传时**不渲染照片框** */
   photo?: string;
 }
@@ -138,6 +139,15 @@ const MODULE_TITLES: Record<string, string> = {
   honors: '个人荣誉',
   selfEval: '自我评价',
 };
+const MODULE_TITLES_EN: Record<string, string> = {
+  education: 'Education',
+  internships: 'Internships',
+  works: 'Professional experience',
+  projects: 'Projects',
+  skills: 'Skills',
+  honors: 'Awards and certifications',
+  selfEval: 'Profile',
+};
 
 const clean = (s: unknown): string => String(s ?? '').trim();
 
@@ -180,24 +190,25 @@ export function buildResumeDocData(
   };
 
   const doc: TailorResumeDoc = tailor?.doc ?? buildLocalTailorDoc(profile);
+  const titles = tailor?.language === 'en' ? MODULE_TITLES_EN : MODULE_TITLES;
 
   /** 按模块 id 生成模块；没有内容的模块返回 null（空模块整块不输出） */
   const buildModule = (id: string): ResumeDocModule | null => {
     if (id === 'education' || id === 'internships' || id === 'works' || id === 'projects') {
       const blocks = toBlocks(doc[id]);
-      return blocks.length ? { id, title: MODULE_TITLES[id], kind: 'blocks', blocks } : null;
+      return blocks.length ? { id, title: titles[id], kind: 'blocks', blocks } : null;
     }
     if (id === 'skills') {
       const lines = (doc.skills || []).map((s) => clean(s?.text)).filter(Boolean);
-      return lines.length ? { id, title: MODULE_TITLES.skills, kind: 'lines', lines } : null;
+      return lines.length ? { id, title: titles.skills, kind: 'lines', lines } : null;
     }
     if (id === 'honors') {
       const lines = (doc.honors || []).map(clean).filter(Boolean);
-      return lines.length ? { id, title: MODULE_TITLES.honors, kind: 'lines', lines } : null;
+      return lines.length ? { id, title: titles.honors, kind: 'lines', lines } : null;
     }
     if (id === 'selfEval') {
       const text = clean(doc.selfEval?.text);
-      return text ? { id, title: MODULE_TITLES.selfEval, kind: 'paragraph', lines: [text] } : null;
+      return text ? { id, title: titles.selfEval, kind: 'paragraph', lines: [text] } : null;
     }
     return null;
   };
@@ -210,7 +221,7 @@ export function buildResumeDocData(
     if (mod) modules.push(mod);
   }
 
-  return { contact, modules };
+  return { contact, modules, language: tailor?.language };
 }
 
 /** 是否有至少一个可导出的模块 */

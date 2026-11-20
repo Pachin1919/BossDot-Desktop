@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    一键下载并启用 BossClaw 模拟面试的本地语音资源包（朗读 / 识别 / 克隆音色）。
+    一键下载并启用 BossDot 模拟面试的本地语音资源包（朗读 / 识别 / 克隆音色）。
 
 .DESCRIPTION
     为什么需要它：四套资源共约 900MB，直接在国内访问 GitHub Releases 常常几十 KB/s 甚至超时。
@@ -12,13 +12,13 @@
         <SpeechDir>/models/melo     朗读 MeloTTS（44.1kHz 单女声）
         <SpeechDir>/models/clone    克隆音色（ZipVoice + vocos 声码器）
         <SpeechDir>/models/asr      语音识别（SenseVoice 中英日韩粤）
-    默认 SpeechDir = %APPDATA%\BossClaw\speech（打包版的 userData 位置）。
+    默认 SpeechDir = %APPDATA%\BossDot\speech（打包版的 userData 位置）。
 
 .PARAMETER Packs
     要安装的包：kokoro / melo / asr / clone / all。默认 kokoro,asr（能朗读 + 能语音作答的最小组合）。
 
 .PARAMETER SpeechDir
-    语音根目录。默认 %APPDATA%\BossClaw\speech；开发期想装到项目里可显式指定。
+    语音根目录。默认 %APPDATA%\BossDot\speech；开发期想装到项目里可显式指定。
 
 .PARAMETER TtsPack
     装完把哪套设为当前朗读模型：kokoro / melo。缺省 = 已装的那套（两套都装时用 kokoro）。
@@ -121,8 +121,8 @@ function Format-Bytes([double]$bytes) {
 }
 
 function Get-DefaultSpeechDir {
-    if ($env:APPDATA) { return (Join-Path $env:APPDATA 'BossClaw\speech') }
-    return (Join-Path $env:LOCALAPPDATA 'BossClaw\speech')
+    if ($env:APPDATA) { return (Join-Path $env:APPDATA 'BossDot\speech') }
+    return (Join-Path $env:LOCALAPPDATA 'BossDot\speech')
 }
 
 function Test-PackInstalled($def) {
@@ -283,7 +283,7 @@ function Set-ActiveTtsPack($pack) {
 
 # ===== 开跑 =====
 Write-Host ''
-Write-Host '  BossClaw 语音资源包 · 一键下载并启用' -ForegroundColor White
+Write-Host '  BossDot 语音资源包 · 一键下载并启用' -ForegroundColor White
 Write-Host '  ---------------------------------------------' -ForegroundColor DarkGray
 
 if (-not $SpeechDir) { $SpeechDir = Get-DefaultSpeechDir }
@@ -309,10 +309,10 @@ New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
 
 # 模型文件被占用时 Windows 解压 / 覆盖会失败，先提醒（不擅自杀进程）
-$running = @(Get-Process -Name 'BossClaw', 'electron' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*BossClaw*' -or $_.Path -like '*desktop-app*' })
+$running = @(Get-Process -Name 'BossDot', 'electron' -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessName -eq 'BossDot' -or $_.Path -like '*desktop-app*' })
 if ($running.Count -gt 0) {
-    Write-Warn2 '检测到 BossClaw 正在运行：模型文件可能被占用。建议先退出应用再继续（本脚本会尝试覆盖）。'
+    Write-Warn2 '检测到 BossDot 正在运行：模型文件可能被占用。建议先退出应用再继续（本脚本会尝试覆盖）。'
 }
 
 $remote = Get-RemoteManifest
@@ -433,6 +433,6 @@ if ($failed.Count -gt 0) {
     exit 1
 }
 
-Write-Ok '全部完成。启动 BossClaw → 设置 → 语音，应显示「已安装」。'
+Write-Ok '全部完成。启动 BossDot → 设置 → 语音，应显示「已安装」。'
 Write-Host '    想换朗读模型：设置 → 语音 → 在 Kokoro / MeloTTS 那行点「切换到这套」。' -ForegroundColor Gray
 exit 0

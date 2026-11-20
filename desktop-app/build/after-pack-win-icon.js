@@ -1,11 +1,11 @@
-// build/after-pack-win-icon.js —— 在打包阶段为 Windows 主 exe 注入 BossClaw 图标与应用元数据
+// 在打包阶段为 Windows 主 exe 注入图标与应用元数据。
 //
 // 背景：
 //   - electron-builder 的 win.signAndEditExecutable 负责“写入图标 + 版本信息”，但它依赖
 //     从 GitHub 下载件 winCodeSign 内的 rcedit-x64.exe；本机/离线环境连不上 GitHub 时该步骤失败。
 //   - 因此本仓库将 signAndEditExecutable 置为 false（跳过其自身 rcedit），改为在 afterPack
 //     钩子里用本地已有的 rcedit 二进制显式写入图标与元数据，从而离线也能产出正确名称/描述的 exe。
-//   - 写入内容：应用图标（resources/icon.ico）+ FileDescription/ProductName/CompanyName/版本号，
+//   - 写入内容：应用图标（package.json 的 build.icon）+ FileDescription/ProductName/CompanyName/版本号，
 //     彻底替换掉 Electron 默认的图标与描述。
 //
 // 用法：仅需在 package.json 的 build 配置顶层添加 "afterPack": "build/after-pack-win-icon.js"。
@@ -50,6 +50,7 @@ function findRcedit() {
       if (fs.existsSync(p)) candidates.push(p);
     }
   }
+  candidates.push(path.join(__dirname, '..', 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe'));
 
   for (const c of candidates) {
     try {
@@ -75,7 +76,7 @@ exports.default = async function (context) {
   const productName = String(appInfo.productName || 'BossClaw');
   const version = String(appInfo.version || '0.0.0');
 
-  const exePath = path.join(context.appOutDir, `${productName}.exe`);
+  const exePath = path.join(context.appOutDir, `${appInfo.productFilename}.exe`);
   if (!fs.existsSync(exePath)) {
     console.log(`[after-pack-win-icon] 跳过：未找到 ${exePath}`);
     return;
@@ -98,10 +99,11 @@ exports.default = async function (context) {
     return;
   }
 
-  const icon = path.join(context.packager.projectDir, 'resources', 'icon.ico');
+  const projectDir = context.packager.projectDir;
+  const icon = path.resolve(projectDir, context.packager.config.icon);
 
   const versionString = [
-    ['FileDescription', 'BossClaw —— 本地 AI 求职投递助手'],
+    ['FileDescription', appInfo.description || productName],
     ['ProductName', productName],
     ['CompanyName', appInfo.companyName || appInfo.author || 'YanQuan'],
     ['LegalCopyright', appInfo.copyright || 'Copyright'],
@@ -109,13 +111,14 @@ exports.default = async function (context) {
     ['ProductVersion', version],
   ];
 
-  const args = [exePath];
-  if (fs.existsSync(icon)) args.push('--set-icon', icon);
+  // 使用相对路径兼容旧版 rcedit 对中文项目目录的支持。
+  const args = [path.relative(projectDir, exePath)];
+  if (fs.existsSync(icon)) args.push('--set-icon', path.relative(projectDir, icon));
   for (const [k, v] of versionString) args.push('--set-version-string', k, v);
   args.push('--set-file-version', `${version}.0`, '--set-product-version', `${version}.0`);
   if (process.env.RCEDIT_FLAGS) args.push(...process.env.RCEDIT_FLAGS.split(/\s+/));
 
   console.log(`[after-pack-win-icon] 注入 ${productName} 图标与元数据 → ${exePath}`);
-  execFileSync(rcedit, args, { stdio: 'inherit' });
+  execFileSync(rcedit, args, { cwd: projectDir, stdio: 'inherit' });
   console.log('[after-pack-win-icon] 完成');
 };

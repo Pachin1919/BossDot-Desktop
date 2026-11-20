@@ -68,9 +68,17 @@ export function isWhitelistedDomain(hostname: string): boolean {
   return WHITELIST_DOMAINS.some((d) => h === d || h.endsWith('.' + d));
 }
 
+export function isHttpBrowserUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url) && URL.canParse(url);
+}
+
+export function isChromiumErrorUrl(url: string): boolean {
+  return /^chrome-error:/i.test(url.trimStart());
+}
+
 /** URL 是否允许在内置浏览器访问（白名单内招聘平台） */
 export function isWhitelistedUrl(url: string): boolean {
-  return isWhitelistedDomain(whitelistHostOf(url));
+  return isHttpBrowserUrl(url) && isWhitelistedDomain(whitelistHostOf(url));
 }
 
 /** 非「平台」分组的白名单分组顺序（供便签页展示；「平台」分组由调用方按启用状态组装） */

@@ -21,22 +21,34 @@
 // 对外 apiRef 契约（Workbench 使用）：send / loadURL / closeTab / openInNewTab / openEngineTab /
 // loadURLInTab / sendInTab / hasTab / isPreloadReady / findTabByPlatform / getActiveTabId / getFirstTabId / bossApi。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Modal, Tooltip, Select, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Input, Modal, Tooltip, Select, message } from 'antd';
+import type { WebviewTag } from 'electron';
 import {
   ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, ExportOutlined,
   PlusCircleOutlined, ThunderboltOutlined, CloseOutlined,
+  MinusOutlined, PlusOutlined,
 } from '@ant-design/icons';
-import { useAppStore } from '@/store/useAppStore';
+import { BROWSER_ZOOM_LEVELS, useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import electronApi from '@/lib/electronApi';
 import { PLATFORM_META, PLATFORM_IDS, PLATFORM_CHIP_PALETTE, platformEnabled, resolvePlatform, type JobPlatform } from '@/lib/bossclaw/platforms';
-import { isWhitelistedUrl, whitelistSitesOf, WHITELIST_GROUPS, type BrowserSite as BrowserWhitelistSite } from '@/lib/bossclaw/browserWhitelist';
+import { isChromiumErrorUrl, isHttpBrowserUrl, isWhitelistedUrl, whitelistSitesOf, WHITELIST_GROUPS, type BrowserSite as BrowserWhitelistSite } from '@/lib/bossclaw/browserWhitelist';
 import { registerBrowser, unregisterBrowser, type BrowserApplyOutcome } from '@/lib/browserRegistry';
+import { BOSS_ONLINE_RESUME_URL, isBossOnlineResumeUrl, parseBossOnlineProfile, type BossOnlineProfileResult } from '@/lib/bossclaw/bossOnlineProfile';
 import CloakView from '@/components/CloakView';
 import BrowserNewTabPage, { type NewTabGroup } from '@/components/BrowserNewTabPage';
 
 // 默认加载 BOSS 直聘（多平台：按 defaultPlatform 加载对应平台首页）
 const BOSS_HOME = PLATFORM_META.boss.homeUrl;
+
+function applyPageZoom(webview: Pick<WebviewTag, 'getZoomFactor' | 'setZoomFactor'>, percent: number) {
+  const factor = percent / 100;
+  try {
+    if (Math.abs(webview.getZoomFactor() - factor) > 0.001) webview.setZoomFactor(factor);
+  } catch {
+    // 标签导航或关闭时 guest 可能尚不可用，下次页面就绪时再应用。
+  }
+}
 
 // 空白标签页（便签页）占位 URL，同时作为下拉的常驻选项 value：选择后新建空白标签，用户自行输入网址访问（受白名单约束）
 const NEW_TAB_PAGE_URL = '__newtab__';
@@ -202,6 +214,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return [tab];
   });
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? '');
+  const [onlineProfile, setOnlineProfile] = useState<BossOnlineProfileResult | null>(null);
+  const [readingOnlineProfile, setReadingOnlineProfile] = useState(false);
+  const zoomPercent = useAppStore((s) => s.browserZoomPercent);
+  const setZoomPercent = useAppStore((s) => s.setBrowserZoomPercent);
+  const zoomIndex = BROWSER_ZOOM_LEVELS.indexOf(zoomPercent);
 
   // ===== 多平台适配：新建标签时选择的平台（与设置页「招聘平台」启用状态联动）=====
   const config0 = useSettingsStore((s) => s.config);
@@ -390,6 +407,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   const preloadReady = useRef<Record<string, boolean>>({});
   // 事件绑定防重复（每个 tabId 只绑定一次）
   const registeredTabs = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    for (const [tabId, webview] of Object.entries(webviewEls.current)) {
+      if (preloadReady.current[tabId]) applyPageZoom(webview, zoomPercent);
+    }
+  }, [zoomPercent]);
   // boss-api 的 seq → resolve 映射
   const apiResolvers = useRef<Map<string, (v: any) => void>>(new Map());
   // L-28：seq → 超时定时器句柄，供卸载时统一清理（原实现未决 Promise + 定时器最长滞留 26s）
@@ -469,6 +491,8 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       switch (channel) {
         case 'nav': {
           const nextUrl = payload?.url;
+          // 失败文档的 location.href 也会由 preload 回传；写回 tab.url 会让 webview.src 重新导航。
+          if (nextUrl && !isHttpBrowserUrl(nextUrl)) break;
           const nextTitle = payload?.title;
           if (nextUrl || nextTitle) {
             touchTab(tabId); // 页面导航视为活跃
@@ -563,6 +587,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     // did-fail-load：加载失败（断网/重置/证书）→ 立即淡出，杜绝永久转圈
     const markReady = () => {
       preloadReady.current[tabId] = true;
+      applyPageZoom(el, useAppStore.getState().browserZoomPercent);
       forceResizeWebview(tabId);
     };
     const ctl = () => loadingCtlRef.current;
@@ -613,7 +638,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     // 此处仅做 URL 兜底同步。did-go-back/did-go-forward 在 SPA 内基本不触发，留作整页导航兜底。
     el.addEventListener('did-navigate', (event: any) => {
       const url = event?.url;
-      if (!url) return;
+      if (!url || !isHttpBrowserUrl(url)) return;
       touchTab(tabId);
       patchTab(tabId, { url });
       if (tabId === activeIdRef.current) reportNavigate(url, '');
@@ -622,7 +647,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     el.addEventListener('did-navigate-in-page', (event: any) => {
       if (event?.isMainFrame !== false) {
         const url = event?.url;
-        if (url) {
+        if (url && isHttpBrowserUrl(url)) {
           touchTab(tabId);
           patchTab(tabId, { url });
           if (tabId === activeIdRef.current) reportNavigate(url, '');
@@ -633,11 +658,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     el.addEventListener('did-go-back', () => {
       // SPA 内 goneBack 实际由 preload 的 history.back() 驱动；此处仅做兜底 URL 同步
       const url = (el as any).getURL?.() || '';
-      if (url) patchTab(tabId, { url });
+      if (isHttpBrowserUrl(url)) patchTab(tabId, { url });
     });
     el.addEventListener('did-go-forward', () => {
       const url = (el as any).getURL?.() || '';
-      if (url) patchTab(tabId, { url });
+      if (isHttpBrowserUrl(url)) patchTab(tabId, { url });
     });
 
     // ===== 页面标题同步 =====
@@ -699,6 +724,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
 
   // 白名单拦截：非招聘平台网址不允许在内置浏览器访问，可转系统浏览器
   const confirmOpenExternal = useCallback((url: string) => {
+    if (!isHttpBrowserUrl(url)) return;
     const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
     Modal.confirm({
       title: '该网址不在招聘平台白名单内',
@@ -762,6 +788,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
 
   // ===== 在指定标签页加载 URL（按 tabId 真正派发）=====
   const loadURLInTab = useCallback((id: string, url: string) => {
+    if (isChromiumErrorUrl(url)) return;
     const tabId = id || tabsRef.current.find((t) => t.kind === 'main')?.id || tabsRef.current[0]?.id;
     if (!tabId) return;
     const el = webviewEls.current[tabId];
@@ -787,8 +814,8 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
 
   const navigate = useCallback((raw: string) => {
     const target = raw.trim();
-    if (!target) return;
-    const finalUrl = /^https?:\/\//.test(target) ? target : 'https://' + target;
+    if (!target || isChromiumErrorUrl(target)) return;
+    const finalUrl = /^https?:\/\//i.test(target) ? target : 'https://' + target;
     // 用户输入的 URL 总是导航到主标签，避免 detail 标签被覆盖
     const mainId = tabsRef.current.find((t) => t.kind === 'main')?.id || activeIdRef.current;
     loadURLInTab(mainId, finalUrl);
@@ -798,8 +825,8 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // 白名单内 → 正常加载（有 tabId 则加载到指定标签，否则加载到主标签）；白名单外 → 拦截并确认转系统浏览器
   const userNavigate = useCallback((raw: string, tabId?: string) => {
     const target = raw.trim();
-    if (!target) return;
-    const finalUrl = /^https?:\/\//.test(target) ? target : 'https://' + target;
+    if (!target || isChromiumErrorUrl(target)) return;
+    const finalUrl = /^https?:\/\//i.test(target) ? target : 'https://' + target;
     if (!isWhitelistedUrl(finalUrl)) {
       confirmOpenExternal(finalUrl);
       return;
@@ -938,6 +965,40 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   }, [sendInTab]);
 
   const readPage = useCallback((tabId?: string) => cmdOnce('page-read', {}, 15000, tabId), [cmdOnce]);
+  const readBossOnlineProfile = useCallback(async (): Promise<BossOnlineProfileResult> => {
+    const existing = tabsRef.current.find((tab) => isBossOnlineResumeUrl(tab.url));
+    const tabId = existing?.id ?? createTab(BOSS_ONLINE_RESUME_URL, 'BOSS 在线简历', false, 'detail');
+    const deadline = Date.now() + 12_000;
+    try {
+      while (Date.now() < deadline) {
+        // 站内路由切换可以重置宿主的加载标记，但已有的 preload 仍能返回正文。
+        const page = await cmdOnce('page-read', {}, 1500, tabId);
+        const url = typeof page?.url === 'string' ? page.url : '';
+        if (/^https:\/\/www\.zhipin\.com\/web\/user(?:\/|[?#]|$)/.test(url)) {
+          return { ok: false, error: '请先在工作台内置浏览器登录 BOSS 直聘，再读取线上资料。' };
+        }
+        if (isBossOnlineResumeUrl(url) && typeof page?.bodyText === 'string') {
+          const profile = parseBossOnlineProfile(page.bodyText);
+          if (profile) {
+            return { ok: true, profile: { ...profile, sourceUrl: BOSS_ONLINE_RESUME_URL, capturedAt: new Date().toISOString() } };
+          }
+        }
+        await sleep(350);
+      }
+      return { ok: false, error: '没有读到 BOSS 线上简历正文。请在内置浏览器打开「在线简历」，确认已登录且页面加载完成后重试。' };
+    } finally {
+      if (!existing) closeTabById(tabId);
+    }
+  }, [createTab, cmdOnce, closeTabById]);
+
+  const showBossOnlineProfile = async () => {
+    setReadingOnlineProfile(true);
+    try {
+      setOnlineProfile(await readBossOnlineProfile());
+    } finally {
+      setReadingOnlineProfile(false);
+    }
+  };
   // 页面就绪事实探测：短超时（6s）——探测失败本身也是有效信息（preload 未就绪）
   const pageStatus = useCallback((tabId?: string) => cmdOnce('page-status', {}, 6000, tabId), [cmdOnce]);
 
@@ -1084,18 +1145,20 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       joblist: (q, city, page, pageSize) => bossApi('joblist', { query: q, city, page, pageSize }),
       jobCard: (jid) => bossApi('jobCard', { encryptJobId: jid }),
       readPage,
+      readBossOnlineProfile,
       domDump: runDomDump,
       prefillGreeting,
       sendApply,
       uiExec,
     });
     return () => unregisterBrowser();
-  }, [loadURLInTab, bossApi, readPage, runDomDump, prefillGreeting, sendApply, uiExec]);
+  }, [loadURLInTab, bossApi, readPage, readBossOnlineProfile, runDomDump, prefillGreeting, sendApply, uiExec]);
 
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
   const autoAssist = useAppStore((s) => s.autoAssist);
   const updateActiveUrl = useCallback((url: string) => {
     // 地址栏编辑只更新当前激活标签 URL（用户操作）
+    if (isChromiumErrorUrl(url)) return;
     const tabId = activeIdRef.current;
     if (tabId) patchTab(tabId, { url });
   }, [patchTab]);
@@ -1176,6 +1239,36 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
             </div>
           ))}
         </div>
+        <div className="browser-zoom" role="group" aria-label="网页缩放">
+          <Button
+            size="small"
+            type="text"
+            aria-label="缩小网页"
+            title="缩小网页"
+            icon={<MinusOutlined />}
+            disabled={zoomIndex <= 0}
+            onClick={() => setZoomPercent(BROWSER_ZOOM_LEVELS[zoomIndex - 1] ?? zoomPercent)}
+          />
+          <Button
+            className="browser-zoom-value"
+            size="small"
+            type="text"
+            aria-label={`网页缩放 ${zoomPercent}%，恢复 100%`}
+            title="恢复网页缩放 100%"
+            onClick={() => setZoomPercent(100)}
+          >
+            {zoomPercent}%
+          </Button>
+          <Button
+            size="small"
+            type="text"
+            aria-label="放大网页"
+            title="放大网页"
+            icon={<PlusOutlined />}
+            disabled={zoomIndex >= BROWSER_ZOOM_LEVELS.length - 1}
+            onClick={() => setZoomPercent(BROWSER_ZOOM_LEVELS[zoomIndex + 1] ?? zoomPercent)}
+          />
+        </div>
         <Tooltip title="新标签页">
           <Select
             size="small"
@@ -1231,6 +1324,9 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           prefix={<span style={{ fontSize: 11, opacity: 0.6 }}>链接</span>}
         />
         <Button size="small" type="primary" onClick={() => activeTab && userNavigate(activeTab.url)}>前往</Button>
+        <Button size="small" loading={readingOnlineProfile} onClick={showBossOnlineProfile}>
+          读取 BOSS 资料
+        </Button>
         <Tooltip title="把当前页面加入投递任务">
           <Button
             size="small"
@@ -1330,6 +1426,35 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           );
         })}
       </div>
+
+      <Modal title="BOSS 线上资料" open={Boolean(onlineProfile)} onCancel={() => setOnlineProfile(null)} footer={null} width={640}>
+        {onlineProfile?.ok ? (
+          <>
+            <Descriptions
+              title="求职意向"
+              size="small"
+              column={1}
+              bordered
+              items={onlineProfile.profile.intents.map((intent, index) => ({
+                key: index,
+                label: intent.jobTitle,
+                children: [intent.employmentType, intent.salary, intent.cities.join('、')].filter(Boolean).join(' · '),
+              }))}
+            />
+            {onlineProfile.profile.unparsedIntents.length > 0 && (
+              <Alert type="info" message="以下意向需要核对" description={onlineProfile.profile.unparsedIntents.join('；')} />
+            )}
+            {onlineProfile.profile.intents.length === 0 && onlineProfile.profile.unparsedIntents.length === 0 && <p>尚未填写求职意向。</p>}
+            <Collapse
+              ghost
+              items={[
+                { key: 'work', label: '工作经历', children: <div className="boss-online-profile-text">{onlineProfile.profile.workExperience || '未填写'}</div> },
+                { key: 'project', label: '项目经历', children: <div className="boss-online-profile-text">{onlineProfile.profile.projectExperience || '未填写'}</div> },
+              ]}
+            />
+          </>
+        ) : onlineProfile && <Alert type="warning" message={onlineProfile.error} />}
+      </Modal>
 
       {/* ===== 右键「查看网页源码」Modal：主进程回传 outerHTML，本页弹窗展示（不跳新标签页）===== */}
       <Modal

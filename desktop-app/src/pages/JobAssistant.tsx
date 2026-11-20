@@ -19,12 +19,14 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { appendTailorSupplement, tailorForJob, writeTailorPointSupplement, type TailorJdPoint, type TailorResult } from '@/lib/bossclaw/jobAssistant';
+import { appendTailorSupplement, tailorForJob, writeTailorPointSupplement, hasUnexportableTailorContent, type TailorJdPoint, type TailorResult } from '@/lib/bossclaw/jobAssistant';
 import { computeMatchScore, extractJdKeywords } from '@/lib/bossclaw/resumeMatch';
 import { stableProfileView } from '@/lib/bossclaw/matching';
+import { isAgentOnline } from '@/lib/bossclaw/agentAnswer';
 import { cleanJobDescription, jdLooksNoisy } from '@/lib/bossclaw/jdCleaner';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { buildResumeHtml, defaultPdfFileName, RESUME_TEMPLATES, isKnownTemplate } from '@/lib/bossclaw/resumePdf';
+import { buildResumeDocx } from '@/lib/bossclaw/resumeDocx';
 import { buildResumeDocData, extractContactInfo, RESUME_SECTION_META } from '@/lib/bossclaw/resumeContact';
 import { parseResumeFile } from '@/lib/bossclaw/resumeParser';
 import { bridgeParseResume } from '@/lib/bridgeClient';
@@ -198,6 +200,7 @@ export default function JobAssistant() {
 
   // ===== 导出定制简历 PDF =====
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'pdf' | 'docx' | 'json'>('pdf');
   const [exporting, setExporting] = useState(false);
   const [exportTailor, setExportTailor] = useState<TailorResult | null>(null);
   const [exportBatch, setExportBatch] = useState<TailorBatchItem[]>([]);
@@ -348,6 +351,7 @@ export default function JobAssistant() {
   /** 打开导出对话框：以提取的联系信息为初值（须用户确认），章节默认勾选 */
   const openExport = (result: TailorResult, title: string) => {
     setExportBatch([]);
+    setExportFormat('pdf');
     setExportReport(null);
     setExportTailor(result);
     const c = extractContactInfo(resumeText, title);
@@ -370,8 +374,14 @@ export default function JobAssistant() {
   };
 
   /** 渲染 A4 HTML → 经主进程 printToPDF 保存（无 Electron 时降级下载 HTML 自行打印） */
-  const onExportPdf = async () => {
+  const onExportResume = async () => {
     if (!exportTailor) return;
+    const results = exportBatch.length ? exportBatch.filter(batchJobIncluded).map((item) => item.result!) : [exportTailor];
+    if ((exportBatch.length > 0 || exportFormat !== 'json') && results.some(hasUnexportableTailorContent)) {
+      const problem = results.flatMap((result) => result.evidence || []).find((finding) => finding.issue);
+      message.error(problem ? `${problem.issue}：${problem.text || problem.field}` : '当前结果没有通过原文校验和模型复检，请重新生成。');
+      return;
+    }
     let values: { name: string; phone: string; email: string; targetTitle: string };
     try {
       values = await exportForm.validateFields();
@@ -418,9 +428,22 @@ export default function JobAssistant() {
         message.warning('没有可导出的模块内容，请至少勾选一个有内容的模块');
         return;
       }
+      const fileName = defaultPdfFileName(data.contact);
+      if (exportFormat !== 'pdf') {
+        if (!api?.saveFile) { message.warning('此格式需要在桌面应用中保存'); return; }
+        const name = fileName.replace(/\.pdf$/i, `.${exportFormat}`);
+        const content = exportFormat === 'docx' ? await buildResumeDocx(data) : JSON.stringify({
+          target: data.contact.targetTitle,
+          reviewCompleted: Boolean(exportTailor.reviewCompleted),
+          findings: exportTailor.evidence || [],
+        }, null, 2);
+        const saved = await api.saveFile(name, content, [exportFormat]);
+        if (saved.ok) message.success(`已保存：${saved.filePath}`);
+        else if (!saved.canceled) message.error(saved.error || '保存失败');
+        return;
+      }
       if (photo) data.photo = photo;
       const html = buildResumeHtml(data, templateId);
-      const fileName = defaultPdfFileName(data.contact);
       if (api?.savePdf) {
         const r = await api.savePdf(fileName, html);
         if (r?.canceled) return;
@@ -478,6 +501,22 @@ export default function JobAssistant() {
     setHistoryJobId(undefined);
   };
 
+  const generateTailor = async (job: JobMeta, extraMaterials: string, iteration?: Parameters<typeof tailorForJob>[6]) => {
+    const greeting = useDataStore.getState().greetingPrompt || undefined;
+    const generate = () => tailorForJob(job, resumeText, profile, config.model, greeting, extraMaterials || undefined, iteration);
+    const read = window.electron?.tailorCheckpointRead;
+    const write = window.electron?.tailorCheckpointWrite;
+    if (!read || !write) return generate();
+    const { runTailorWorkflow, tailorRunId } = await import('@/lib/bossclaw/tailorWorkflow');
+    const { apiKey, ...modelSettings } = config.model;
+    const runId = await tailorRunId({
+      job, resumeText, profile, extraMaterials, greeting, supplements: iteration?.supplements || [],
+      model: modelSettings, configured: Boolean(apiKey),
+      ...(!apiKey && isAgentOnline() ? { agent: true } : {}),
+    });
+    return runTailorWorkflow({ read, write }, runId, generate);
+  };
+
   const onGenerate = async (supplement?: string, clearMainDraft = true): Promise<boolean> => {
     if (generationLock.current || exporting) return false;
     if (supplement !== undefined && !supplement.trim()) { message.warning('请先填写要补充的内容'); return false; }
@@ -496,15 +535,7 @@ export default function JobAssistant() {
       // 经历补充材料每次调用前现读磁盘（不缓存内容），随定制与要点判定一并送入 AI
       const extraText = await resolveMaterialsText();
       const supplements = appendTailorSupplement(tailor?.supplements, supplement || '');
-      const r = await tailorForJob(
-        job,
-        resumeText,
-        profile,
-        config.model,
-        useDataStore.getState().greetingPrompt || undefined,
-        extraText || undefined,
-        { supplements, previousResult: tailor || undefined }
-      );
+      const r = await generateTailor(job, extraText, { supplements, previousResult: tailor || undefined });
       // 迭代失败保留上一版和待提交文本，用户可以直接重试。
       if (tailor && r.method === 'local') {
         message.warning(`${r.warning || 'AI 未能完成重新生成'} 上一版与本轮补充已保留，请重试。`);
@@ -555,7 +586,7 @@ export default function JobAssistant() {
     try {
       await runTailorBatch(batchItems, async (item) => {
         const extra = await resolveMaterialsText();
-        return tailorForJob(item.job, resumeText, profile, config.model, useDataStore.getState().greetingPrompt || undefined, extra || undefined);
+        return generateTailor(item.job, extra);
       }, {
         shouldStop: () => batchStop.current,
         shouldSkip: (item) => batchJobIncluded(item) ? undefined : '该岗位已从工作台移除',
@@ -619,7 +650,7 @@ export default function JobAssistant() {
   const batchLabels = { queued: '待生成', running: '生成中', done: 'AI 已生成', local: '本地结果', failed: '失败', stopped: '已停止', filtered: '已筛除' };
 
   return (
-    <div className="page">
+    <div className="page tailor-page">
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -650,7 +681,7 @@ export default function JobAssistant() {
             <Button type="text" disabled={generating || exporting} onClick={() => setBatchItems([])}>关闭批量列表</Button>
           </Space>
           {!hasResume && <Alert type="warning" message="请先在简历中心上传简历并生成职业画像" />}
-          {!config.model?.apiKey && <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>未配置 AI，当前会生成本地结果。配置 AI 后可从工作台重新选择岗位生成。</Text>}
+          {!config.model?.apiKey && <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>未配置模型 API。Agent 在线时由 Agent 生成，否则展示本地预览。</Text>}
           <List size="small" dataSource={batchItems} pagination={batchItems.length > 10 ? { pageSize: 10, showSizeChanger: false } : false}
             renderItem={(item) => (
               <List.Item actions={[
@@ -748,7 +779,7 @@ export default function JobAssistant() {
           </Space>
           {!config.model?.apiKey && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              未配置 AI 时将按本地模板生成（摘要 + 打招呼语占位），建议在「设置 → AI」中填写密钥。
+              Agent 在线时可直接生成。也可在「设置 → AI / LLM 配置」接入模型 API。
             </Text>
           )}
         </div>
@@ -886,7 +917,7 @@ export default function JobAssistant() {
           滚动策略：整块内容区（body）一条主滑动条，标题与底部按钮固定不动；
           内部不再做嵌套滚动（嵌套滚动会出现两条滚动条、滚轮归属混乱） */}
       <Modal
-        title={<Space><DownloadOutlined style={{ color: 'var(--brand)' }} />{exportBatch.length ? `批量导出 ${exportBatch.length} 份简历 PDF` : '导出定制简历 PDF'}</Space>}
+        title={<Space><DownloadOutlined style={{ color: 'var(--brand)' }} />{exportBatch.length ? `批量导出 ${exportBatch.length} 份简历 PDF` : '导出定制简历'}</Space>}
         open={exportOpen}
         onCancel={() => { if (!exporting) setExportOpen(false); }}
         width={620}
@@ -896,15 +927,21 @@ export default function JobAssistant() {
         cancelText="取消"
         confirmLoading={exporting}
         cancelButtonProps={{ disabled: exporting }}
-        onOk={onExportPdf}
+        onOk={onExportResume}
       >
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="所有内容均来自你的简历与定制结果，不会编造任何能力与数据。"
-          description={exportBatch.length ? '请核对共用的联系信息和模板；每份简历使用对应岗位名称，选择一次目录后逐份保存，同名文件自动加序号。' : '请核对下方联系信息（已从简历自动提取，可修改）；选择模板后生成 A4 PDF，可直接投递。'}
+          message="正式导出需要通过原文校验和模型复检。"
+          description={exportBatch.length ? '请核对共用的联系信息和模板。每份简历使用对应岗位名称。' : '请核对联系信息。PDF 和 DOCX 使用相同正文。来源记录供自己核对。'}
         />
+        {!exportBatch.length && <Radio.Group
+          value={exportFormat}
+          onChange={(event) => setExportFormat(event.target.value)}
+          style={{ marginBottom: 12 }}
+          options={[{ label: 'PDF', value: 'pdf' }, { label: 'DOCX', value: 'docx' }, { label: '内部来源记录', value: 'json' }]}
+        />}
         {exporting && exportBatch.length > 0 && <div style={{ marginBottom: 12 }}>
           <Progress percent={exportProgress.total ? Math.round(exportProgress.completed / exportProgress.total * 100) : 0} status="active" />
           <Space wrap><Text>已处理 {exportProgress.completed}/{exportProgress.total} 份</Text>

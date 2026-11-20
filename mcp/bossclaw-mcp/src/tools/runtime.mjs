@@ -1,6 +1,6 @@
 // src/tools/runtime.mjs —— 运行控制工具组（启动 / 停止 / 状态）
 import path from 'node:path';
-import { PATHS, DESKTOP_DIR, MODE, ok, fail, statSafe, probePort, tailTextFile, spawnDetached, waitForSpawn, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
+import { PATHS, DESKTOP_DIR, MODE, CAMOUFOX_PORT, ok, fail, statSafe, probePort, tailTextFile, spawnDetached, waitForSpawn, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
 import { obj, str, num, bool, arr, WRITE_LOCAL, READ_ONLY } from '../schema.mjs';
 import { listBossclawProcesses } from '../procs.mjs';
 
@@ -44,17 +44,17 @@ export const runtimeTools = [
         // 审查 2026-10-21 B-9：exe 是 agent 可填的自由参数，直接 spawn 等于把 MCP 变成
         // 「任意可执行文件启动器」。与 procs.mjs 对「杀进程」的克制口径对齐：只允许
         // BossClaw.exe / electron.exe —— 其余一律拒绝，并给出可操作提示。
-        if (!/^(BossClaw|electron)(\.exe)?$/i.test(path.basename(exePath))) {
+        if (!/^(BossDot|electron)(\.exe)?$/i.test(path.basename(exePath))) {
           return fail(
-            `exe 只接受 BossClaw 自身的可执行文件（BossClaw.exe / electron.exe），收到：${path.basename(exePath)}。` +
-              '请传 <安装目录>\\BossClaw.exe，或改用 installed:true / dev:true。'
+            `exe 只接受 BossDot 自身的可执行文件（BossDot.exe / electron.exe），收到：${path.basename(exePath)}。` +
+              '请传 <安装目录>\\BossDot.exe，或改用 installed:true / dev:true。'
           );
         }
-      } else if (args.installed) {
+      } else if (args.installed || (!args.dev && process.env.BOSSCLAW_EXE)) {
         exePath = await resolveInstalledExe();
         if (!exePath) {
           return fail(
-            '未找到已安装的 BossClaw.exe。请用 exe 参数显式指定（如 <安装目录>\\BossClaw.exe），' +
+            '未找到 BossDot.exe。请用 exe 参数显式指定（如 <安装目录>\\BossDot.exe），' +
               '或设置 BOSSCLAW_EXE 环境变量指向安装版可执行文件。'
           );
         }
@@ -81,15 +81,15 @@ export const runtimeTools = [
         await sleep(1200);
       }
 
-      const env = {};
-      if (args.control !== false) env.BOSSCLAW_CONTROL = '1';
+      const env = { BOSSCLAW_CONTROL: args.control === false ? '0' : '1' };
       if (args.noGpu) env.BOSSCLAW_NO_GPU = '1';
       // 安装版不传 '.'（打包 exe 自带应用路径，多余参数可能被 Chromium 当作 URL/开关处理）；
       // 控制桥通过 argv 传 --control-bridge（与 start-bossclaw.cmd 一致，参数比环境变量更可靠）
+      const profile = process.env.BOSSCLAW_USERDATA ? [`--user-data-dir=${PATHS.userData}`] : [];
       const argv =
         mode === 'installed'
-          ? [...(args.noGpu ? ['--no-sandbox'] : []), ...(args.control !== false ? ['--control-bridge'] : []), ...(args.extraArgs || [])]
-          : ['.', ...(args.dev ? ['--dev'] : []), ...(args.noGpu ? ['--no-sandbox'] : []), ...(args.extraArgs || [])];
+          ? [...profile, ...(args.noGpu ? ['--no-sandbox'] : []), ...(args.control !== false ? ['--control-bridge'] : []), ...(args.extraArgs || [])]
+          : ['.', ...profile, ...(args.dev ? ['--dev'] : []), ...(args.noGpu ? ['--no-sandbox'] : []), ...(args.extraArgs || [])];
       const { pid, cmd, child } = spawnDetached(exePath, argv, { cwd, env });
 
       // 审查 #20：先确认 spawn 真的成功（ENOENT/EPERM 只在异步 'error' 事件里体现），
@@ -190,7 +190,7 @@ export const runtimeTools = [
   {
     name: 'bossclaw_app_status',
     title: '应用运行状态',
-    description: '查看应用是否运行、进程列表、控制桥可用性、Camoufox 桥端口（18767）与日志新鲜度。排查现场的第一步。',
+    description: '查看应用进程、控制桥、引擎端口与日志状态。',
     annotations: READ_ONLY,
     inputSchema: obj({}),
     handler: async () => {
@@ -198,7 +198,7 @@ export const runtimeTools = [
       // 无关耗时操作全部并发，减少串行累加延迟：
       // 18767 端口探测 / 引擎状态文件 / cookie 文件 / 三个日志 stat 全部并行
       const [camoufoxUp, engineStat, cookieStat, logEntries] = await Promise.all([
-        probePort(18767),
+        probePort(CAMOUFOX_PORT),
         statSafe(PATHS.engineState),
         statSafe(PATHS.camoufoxCookies),
         Promise.all(Object.entries(PATHS.logs).map(async ([k, f]) => [k, await statSafe(f)])),
@@ -212,14 +212,15 @@ export const runtimeTools = [
         `- 应用进程：${processes.length ? `${processes.length} 个（pid ${processes.slice(0, 5).map((p) => p.pid).join(', ')}，detect=${method}）` : '未运行'}`,
         warning ? `- ⚠️ ${warning}` : '',
         `- 控制桥：${bridge ? (bridge.stale ? `记录已失效（pid ${bridge.pid}）` : `:${bridge.port} ${bridgeHealth?.ok ? '✅ 健康' : `⚠️ ${bridgeHealth?.error || '无响应'}`}`) : '未开启'}`,
-        `- Camoufox 桥（:18767）：${camoufoxUp ? '✅ 端口可达' : '未监听'}`,
+        `- Camoufox 桥（:${CAMOUFOX_PORT}）：${camoufoxUp ? '✅ 端口可达' : '未监听'}`,
         `- 引擎状态文件：${engineStat.exists ? `${PATHS.engineState}（${engineStat.mtime}）` : '不存在'}`,
         `- Camoufox Cookie：${cookieStat.exists ? `${PATHS.camoufoxCookies}（${cookieStat.mtime}）` : '不存在（需先扫码登录）'}`,
         ``,
         `日志新鲜度：`,
         ...Object.entries(logs).map(([k, v]) => `  - ${k}: ${v.exists ? `${v.mtime}（${v.size} 字节）` : '不存在'}`),
       ].filter(Boolean);
-      const data = { running: processes.length > 0, processes, bridge, warning: warning || null, camoufoxPort: camoufoxUp, logs };
+      const bridgeStatus = bridge ? { pid: bridge.pid, port: bridge.port, stale: Boolean(bridge.stale) } : null;
+      const data = { running: processes.length > 0 || bridgeHealth?.ok === true, processes, bridge: bridgeStatus, warning: warning || null, camoufoxPort: camoufoxUp, logs };
       return ok(lines.join('\n'), data);
     },
   },

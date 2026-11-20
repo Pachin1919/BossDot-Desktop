@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { SunOutlined, MoonOutlined, MonitorOutlined, PushpinOutlined } from '@ant-design/icons';
 import { useAppStore, type EngineStatus, type ThemeMode } from '../store/useAppStore';
 import electronApi from '../lib/electronApi';
-import bossclawIcon from '../assets/bossclaw-icon.png';
+import appIcon from '../../resources/bossdot.png';
+import { displayName } from '../../resources/app-identity.json';
 import { WindowControls } from './WindowControls';
 import { Tooltip } from './Tooltip';
 
@@ -51,8 +52,8 @@ export default function TitleBar() {
     <header className="title-bar">
       {/* 左侧拖拽区（双击最大化/还原） */}
       <div className="title-bar-drag" onDoubleClick={toggleMaximize}>
-        <img className="title-bar-icon" src={bossclawIcon} alt="BossClaw" />
-        <span className="title-bar-name">BossClaw</span>
+        <img className="title-bar-icon" src={appIcon} alt="" />
+        <span className="title-bar-name">{displayName}</span>
         <span className="title-bar-sep">·</span>
         <span className="title-bar-status">
           <span className="status-led" style={{ background: meta.color }} />
@@ -81,6 +82,7 @@ export default function TitleBar() {
               <button
                 type="button"
                 className={`theme-seg-item${theme === opt.value ? ' is-active' : ''}`}
+                aria-pressed={theme === opt.value}
                 onClick={() => setTheme(opt.value)}
               >
                 {opt.icon}

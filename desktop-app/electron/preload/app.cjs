@@ -43,6 +43,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
   'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-usage',
   'jc:save-file', 'jc:save-pdf', 'jc:save-pdf-batch', 'jc:save-pdf-batch-cancel',
+  'jc:tailor-checkpoint-read', 'jc:tailor-checkpoint-write',
   'jc:save-pdf-batch-progress', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
   'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
   'jc:webview-diag', 'jc:webview-input', 'jc:webview-input-done', 'jc:webview-open-link', 'jc:webview-source',
@@ -220,6 +221,8 @@ const api = {
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),
+  tailorCheckpointRead: (id) => ipcRenderer.invoke('jc:tailor-checkpoint-read', id),
+  tailorCheckpointWrite: (id, snapshot) => ipcRenderer.invoke('jc:tailor-checkpoint-write', id, snapshot),
   savePdfBatch: (items, requestId) => ipcRenderer.invoke('jc:save-pdf-batch', items, requestId),
   cancelPdfBatch: (requestId) => ipcRenderer.invoke('jc:save-pdf-batch-cancel', requestId),
   onPdfBatchProgress: (callback) => {

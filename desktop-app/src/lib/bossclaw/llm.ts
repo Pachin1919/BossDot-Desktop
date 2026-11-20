@@ -1066,6 +1066,7 @@ export async function cachedCallModel(
   const key = hashText(
     JSON.stringify([
       scope,
+      config.apiKey?.trim() ? 'api' : 'agent',
       config.provider,
       config.model,
       temperature,

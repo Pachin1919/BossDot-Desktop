@@ -1,6 +1,6 @@
 // src/procs.mjs —— 进程探测（定位 BossClaw 自己的 Electron 进程，避免误伤其它 Electron 应用）
 import { execFile } from 'node:child_process';
-import { listProcesses, isPidAlive, readControlBridgeInfo } from './context.mjs';
+import { DESKTOP_DIR, listProcesses, isPidAlive, readControlBridgeInfo } from './context.mjs';
 
 const isWin = process.platform === 'win32';
 
@@ -10,7 +10,7 @@ function psJson(script) {
     execFile(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-Command', script],
-      { windowsHide: true, maxBuffer: 4 * 1024 * 1024, timeout: 15_000 },
+      { windowsHide: true, maxBuffer: 4 * 1024 * 1024, timeout: 3_000 },
       (err, stdout) => {
         if (err) return resolve(null);
         const text = String(stdout).trim();
@@ -41,7 +41,7 @@ export async function listBossclawProcesses() {
   let warning;
 
   const rows = await psJson(
-    "Get-CimInstance Win32_Process -Filter \"Name='electron.exe' OR Name='BossClaw.exe'\" | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    "Get-CimInstance Win32_Process -Filter \"Name='electron.exe' OR Name='BossDot.exe'\" | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
   );
   if (rows) {
     method = 'cim';
@@ -49,7 +49,7 @@ export async function listBossclawProcesses() {
       .map((r) => ({ pid: Number(r.ProcessId), name: String(r.Name || ''), commandLine: String(r.CommandLine || '') }))
       .filter((r) => Number.isFinite(r.pid));
     // 只认命令行指向本应用的进程（源码目录、release 打包产物或已安装的 BossClaw.exe）
-    processes = all.filter((r) => /Boss-?claw/i.test(r.commandLine));
+    processes = all.filter((r) => /^BossDot\.exe$/i.test(r.name) || r.commandLine.toLowerCase().includes(DESKTOP_DIR.toLowerCase()));
     if (!processes.length && all.length) {
       warning = `检测到 ${all.length} 个 electron/BossClaw 进程，但命令行均不指向 BossClaw，已按「未运行」处理（避免误伤其它应用）`;
     }
