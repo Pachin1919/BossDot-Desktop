@@ -126,7 +126,7 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
   try {
     infoFile = path.join(app.getPath('userData'), 'control-bridge.json');
   } catch {
-    infoFile = path.join(os.tmpdir(), 'bossclaw-control-bridge.json');
+    infoFile = path.join(os.tmpdir(), 'bossdot-control-bridge.json');
   }
 
   /**

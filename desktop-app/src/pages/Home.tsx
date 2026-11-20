@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin, Modal, notification } from 'antd';
+import { App as AntApp, Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin, Modal } from 'antd';
 import {
   FileTextOutlined,
   AimOutlined,
@@ -128,6 +128,7 @@ function evalDeliveryStep(pending: PendingItem[], engineRunning: boolean) {
 }
 
 export default function Home() {
+  const { notification } = AntApp.useApp();
   const profile = useDataStore((s) => s.profile);
   const resumeText = useDataStore((s) => s.resumeText); // P24：订阅 resumeText，避免外部改动后进度/步骤过期
   const directionPlan = useDataStore((s) => s.directionPlan);
@@ -317,33 +318,33 @@ export default function Home() {
     llmNoticeShown = true;
     addLog(
       'warn',
-      '未配置大模型 API Key：AI 分析 / 生成（岗位评分、打招呼语、职业画像、定制简历）将使用本地规则。可在「设置 → AI / LLM 配置」填写 API Key 后启用。'
+      '未配置大模型 API Key。有 Agent 在线时可用代答，否则使用相应的本地预览。'
     );
     notification.warning({
       key: LLM_NOTICE_KEY,
       placement: 'top',
       duration: LLM_NOTICE_DURATION,
       showProgress: true,
-      message: '未配置大模型 API Key，AI 能力当前不可用',
+      message: '未配置大模型 API Key',
       description: (
         <div style={{ fontSize: 13, lineHeight: '20px' }}>
-          <div>岗位评分、打招呼语、职业画像、定制简历将改用本地规则生成；采集与投递流程不受影响。</div>
-          <div style={{ marginTop: 6 }}>点击本通知前往「设置 → AI / LLM 配置」填写 API Key 即可启用 AI。</div>
+          <div>可以连接 Agent 代答，或在「设置 → AI / LLM 配置」接入模型 API。</div>
+          <div style={{ marginTop: 6 }}>两种模型入口均未连接时，相关功能使用本地规则。</div>
         </div>
       ),
       onClick: () => openSettings('llm'),
     });
-  }, [llmReady, addLog, openSettings]);
+  }, [llmReady, addLog, notification, openSettings]);
 
   return (
-    <div className="page">
+    <div className="page home-page">
       <div className="page-head">
         <div>
           <h1 className="page-title">
             <HomeOutlined className="page-title-icon" />首页
           </h1>
           <p className="page-sub">
-            面向求职者的本地 AI 投递助手：简历解析 → 职业画像 → 方向选择 → 岗位整理 → AI 匹配 → 沟通草稿 → 投递进度，集中在一个应用内完成。
+            查看岗位、投递进度与当前配置。
           </p>
         </div>
         <div className="page-head-extra">
@@ -355,9 +356,9 @@ export default function Home() {
 
       {/* 子模块：欢迎区（hero） */}
       <div className="hero">
-        <h2 className="hero-title">欢迎回来，开始今天的投递</h2>
+        <h2 className="hero-title">今天的求职工作</h2>
         <p className="hero-sub">
-          在右侧浏览器中打开 BOSS 直聘岗位 → 点「加入任务」→ AI 分析评分 → 确认后进入「待投递」队列。首次成功投递后会自动暂停，供你核对沟通对象与内容。
+          在工作台打开岗位并加入任务，核对 AI 分析和招呼语后再确认投递。首次成功投递后会自动暂停。
         </p>
         <div className="hero-actions">
           <Button type="primary" size="large" className="btn-uniform-lg" icon={<ThunderboltOutlined />} onClick={() => setRoute('workbench')}>
@@ -373,7 +374,7 @@ export default function Home() {
       </div>
 
       {/* 子模块：数据概览指标卡（今日投递/成功率/待处理岗位/剩余次数） */}
-      <div className="short-grid cols-4" style={{ marginBottom: 20 }}>
+      <div className="short-grid cols-4 home-metrics">
         <MetricCard
           title="今日投递"
           value={sentToday}

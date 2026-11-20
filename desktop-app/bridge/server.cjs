@@ -19,8 +19,8 @@ try {
   console.warn(`[OpenClaw bridge] 读取 config.json 失败，回退默认配置：${e.message}`);
   config = {};
 }
-const PORT = Number(config.port) || 18765;
-const dataDir = path.join(os.homedir(), '.bossclaw');
+const PORT = Number(process.env.BOSSCLAW_BRIDGE_PORT || config.port) || 18765;
+const dataDir = process.env.BOSSCLAW_DATA_DIR || path.join(os.homedir(), '.bossclaw');
 const databasePath = path.join(dataDir, 'data.json');
 fs.mkdirSync(dataDir, { recursive: true });
 

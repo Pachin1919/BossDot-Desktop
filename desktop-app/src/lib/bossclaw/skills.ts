@@ -144,7 +144,7 @@ export async function ensureSkillsLoaded(): Promise<void> {
             name: String(s.name || s.id || ''),
             description: String(s.description || ''),
             scope: (['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
-            defaultEnabled: s.defaultEnabled !== false,
+            defaultEnabled: s.id === 'jd-reading' ? false : s.defaultEnabled !== false,
             custom: Boolean(s.custom),
             body,
           } as LoadedSkill;
@@ -201,7 +201,7 @@ export function isSkillEnabled(id: string): boolean {
   const skill = findSkill(id);
   if (!skill) return false;
   const state = loadState();
-  return state[id] ?? skill.defaultEnabled;
+  return state[id] ?? (id === 'jd-reading' ? false : skill.defaultEnabled);
 }
 
 /** 启停某技能（true=启用）。开关变化会改变注入指令 → 对应 AI 缓存 key 自动失效。 */
@@ -224,7 +224,7 @@ export function allSkillsWithState(): (BossSkill & { enabled: boolean })[] {
     defaultEnabled: s.defaultEnabled,
     instructions: 'body' in s ? s.body : s.instructions,
     custom: 'custom' in s ? s.custom : false,
-    enabled: state[s.id] ?? s.defaultEnabled,
+    enabled: state[s.id] ?? (s.id === 'jd-reading' ? false : s.defaultEnabled),
   }));
 }
 
@@ -286,7 +286,7 @@ export async function deleteCustomSkill(id: string): Promise<SkillOpResult> {
 export async function skillInstructionsFor(scope: SkillScope): Promise<string> {
   await ensureSkillsLoaded();
   const state = loadState();
-  const enabled = currentDefs().filter((s) => s.scope === scope && (state[s.id] ?? s.defaultEnabled));
+  const enabled = currentDefs().filter((s) => s.scope === scope && (state[s.id] ?? (s.id === 'jd-reading' ? false : s.defaultEnabled)));
   if (!enabled.length) return '';
   const blocks = enabled.map((s) => {
     const body = 'body' in s ? s.body : s.instructions;

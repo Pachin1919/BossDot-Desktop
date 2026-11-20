@@ -143,7 +143,7 @@ export default function VoicePackCard({ active }: { active: boolean }) {
 
       <SettingsNote
         text="支持 Piper / VITS / MeloTTS、Kokoro 布局（Matcha / Kitten / Pocket 本版不导入）"
-        detail="选一个目录（不是单个文件）。会先探测模型族并试听，通过后才复制到本机音色库。音色包版权由你自行确认，BossClaw 不分发、不推荐下载源。"
+        detail="选一个目录（不是单个文件）。会先探测模型族并试听，通过后才复制到本机音色库。音色包版权由你自行确认，BossDot不分发、不推荐下载源。"
       />
 
       <div className="setting-actions" style={{ marginBottom: 12 }}>

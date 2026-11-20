@@ -27,7 +27,7 @@ from pathlib import Path
 # ============================================================
 # 路径与配置
 # ============================================================
-DATA_DIR = Path.home() / '.bossclaw'
+DATA_DIR = Path(os.environ.get('BOSSCLAW_DATA_DIR') or (Path.home() / '.bossclaw'))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # 平台：boss / liepin / zhaopin / job51（BOSS 为默认兼容路径）
@@ -43,7 +43,6 @@ def cookie_file(platform: str = 'boss') -> Path:
 
 
 # 内核检测结果缓存（进程生命周期内只检测一次）
-_KERNEL_CACHE: dict | None = None
 
 
 def log(icon: str, msg: str):
@@ -202,27 +201,20 @@ def clear_session(platform: str = 'boss') -> bool:
 # ============================================================
 # 内核检测与浏览器启动（仅 Camoufox 原生隐身内核）
 # ============================================================
-def detect_kernel(force: bool = False) -> dict:
+def detect_kernel() -> dict:
     """检测可用的隐身内核。仅 Camoufox 原生内核可用；系统浏览器不参与回退。"""
-    global _KERNEL_CACHE
-    if _KERNEL_CACHE and not force:
-        return _KERNEL_CACHE
     try:
-        import camoufox
-        from camoufox.utils import installed_verstr
-        if installed_verstr():
-            _KERNEL_CACHE = {
-                "kind": "camoufox", "path": None, "camoufox": True,
-                "message": "Camoufox 隐身引擎内核（C++ 级指纹伪装）",
-            }
-            return _KERNEL_CACHE
+        from camoufox.pkgman import camoufox_path, launch_path
+        executable = launch_path(camoufox_path(download_if_missing=False))
     except Exception:
-        pass
-    _KERNEL_CACHE = {
-        "kind": "none", "path": None, "camoufox": False,
-        "message": "隐身引擎未就绪：暂未下载 Camoufox 内核，请安装 Camoufox 原生内核：pip install \"camoufox[geoip]\" && camoufox fetch",
+        return {
+            "kind": "none", "path": None, "camoufox": False,
+            "message": "隐身引擎未就绪：未检测到 Camoufox 内核，请用 BossDot 的 Python 环境运行 python -m camoufox fetch。",
+        }
+    return {
+        "kind": "camoufox", "path": executable, "camoufox": True,
+        "message": "Camoufox 原生内核已就绪",
     }
-    return _KERNEL_CACHE
 
 
 # ============================================================

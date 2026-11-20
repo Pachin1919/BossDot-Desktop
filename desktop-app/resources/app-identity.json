@@ -1,0 +1,7 @@
+{
+  "productName": "BossDot",
+  "appId": "local.bossdot.desktop",
+  "displayName": "BossDot",
+  "bridgePort": 19765,
+  "camoufoxPort": 19767
+}

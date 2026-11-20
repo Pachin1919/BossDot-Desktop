@@ -8,7 +8,6 @@ const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, na
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
@@ -348,12 +347,21 @@ const cloakLauncher = require('./cloakbrowser/launcher.cjs');
 
 const isDev = !app.isPackaged && process.argv.includes('--dev');
 const DEV_URL = 'http://localhost:5173';
-const APP_ID = 'com.bossclaw.desktop';
 
-app.setName('BossClaw');
+function isHttpBrowserUrl(url) {
+  return typeof url === 'string' && /^https?:\/\//i.test(url) && URL.canParse(url);
+}
+
+function blockChromiumErrorNavigation(event) {
+  if (/^chrome-error:/i.test(event.url)) event.preventDefault();
+}
+const { displayName: APP_NAME, productName, appId, bridgePort, camoufoxPort } = require('../resources/app-identity.json');
+
+app.setName(productName);
+const engineDataDir = () => path.join(app.getPath('userData'), 'engines');
 // 主窗口图标（nativeImage 加载 .ico，可同时作为大/小图标源：
 // Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
-const APP_ICON_ICO = unpackedResourcePath(path.join(__dirname, '..', 'resources', 'icon.ico'));
+const APP_ICON_ICO = unpackedResourcePath(path.join(__dirname, '..', 'resources', 'bossdot.ico'));
 const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
 // Windows 应用身份（AUMID）。
 // 进程一旦设置显式 AUMID，Explorer 会按「应用身份」解析任务栏按钮图标：根目录 start-bossclaw.cmd
@@ -366,10 +374,10 @@ const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
 function registerWindowsAppIdentity() {
   if (process.platform !== 'win32') return;
   if (process.defaultApp) return;
-  app.setAppUserModelId(APP_ID);
+  app.setAppUserModelId(appId);
   if (!fs.existsSync(APP_ICON_ICO)) return;
   try {
-    const key = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`;
+    const key = `HKCU\\Software\\Classes\\AppUserModelId\\${appId}`;
     const write = (name, value) => execFile(
       'reg.exe',
       ['add', key, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'],
@@ -377,7 +385,7 @@ function registerWindowsAppIdentity() {
       // 注册失败只影响通知归属的图标/名称，静默降级，不阻断启动
       (err) => { if (err) dlog('warn', 'register app identity failed', { message: err.message }); }
     );
-    write('DisplayName', 'BossClaw');
+    write('DisplayName', APP_NAME);
     write('IconUri', APP_ICON_ICO);
   } catch (e) {
     dlog('warn', 'register app identity failed', { message: e?.message });
@@ -430,14 +438,14 @@ const trayPrefs = { closeToTray: true, notify: true };
 let trayTipShown = false;
 
 
-// Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口 18767
+// Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口由 app-identity.json 定义
 let camoufoxProcess = null;
-const CAMOUFOX_PORT = 18767;
+const CAMOUFOX_PORT = camoufoxPort;
 // M-2：隐身后端桥令牌不再硬编码（原为常量 'bossclaw-camoufox'）。
-// 运行时随机生成并存于 ~/.bossclaw/camoufox-token（跨启动稳定，避免与上一会话残留的桥令牌不一致），
+// 运行时随机生成并存于 应用配置目录的 engines/camoufox-token（跨启动稳定，避免与上一会话残留的桥令牌不一致），
 // 经**环境变量**传给 Python（不再走 argv，避免出现在进程命令行里）。
 function loadOrCreateRuntimeSecret(name) {
-  const file = path.join(os.homedir(), '.bossclaw', name);
+  const file = path.join(engineDataDir(), name);
   try {
     const existing = fs.readFileSync(file, 'utf8').trim();
     if (existing) return existing;
@@ -481,14 +489,14 @@ async function resetDataForVersion() {
         dlog('warn', 'clear boss session storage exceeded 15s; proceeding without waiting');
       }
     } catch (e) { dlog('warn', 'clear boss session storage failed', { message: e?.message }); }
-    // 2) 清空 Camoufox 隐身引擎在 ~/.bossclaw 下的登录态与运行态文件。
+    // 2) 清空 Camoufox 隐身引擎在应用配置目录的 engines 下的登录态与运行态文件。
     //    原实现只删 `camoufox-cookies.json` 一个文件，漏掉：分平台 cookie（camoufox-cookies-{platform}.json）、
     //    引擎探测态（engine-state.json）、采集断点（collection-progress.json）、本地桥数据（data.json）
     //    —— v3「从零重建」后仍残留旧登录态/旧断点，会出现错误续跑或「虚假就绪」（见审查 #76）。
     //    这里按白名单清理：cookie 一律按 `camoufox-cookies*.json` 通配（覆盖未来新增平台），
     //    其余文件显式列举，避免误删用户放在同目录的其它文件。
     try {
-      const camDir = path.join(app.getPath('home'), '.bossclaw');
+      const camDir = engineDataDir();
       if (fs.existsSync(camDir)) {
         for (const f of fs.readdirSync(camDir)) {
           if (/^camoufox-cookies.*\.json$/i.test(f) || /^camoufox-identity.*\.json$/i.test(f)) {
@@ -533,7 +541,7 @@ function startBridge() {
     const child = spawn(process.execPath, [server], {
       stdio: 'ignore',
       detached: false,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BOSSCLAW_BRIDGE_PORT: String(bridgePort), BOSSCLAW_DATA_DIR: engineDataDir() },
     });
     bridgeProcess = child;
     child.on('error', (err) => dlog('warn', 'bridge process error', { message: err?.message }));
@@ -612,7 +620,7 @@ let _cfxDepsInstalling = null;  // 后台安装 Promise（去重）
 // ===== 引擎检测状态持久化：内核/依赖检测过一次即跨启动保留，避免每次开软件重做 =====
 // app.getPath 须在 ready 后调用，故惰性计算路径
 function comfoxStateFile() {
-  return path.join(app.getPath('home'), '.bossclaw', 'engine-state.json');
+  return path.join(engineDataDir(), 'engine-state.json');
 }
 function loadEngineState() {
   try {
@@ -733,7 +741,7 @@ async function startCamoufoxBridge(pythonOverride) {
     const server = unpackedResourcePath(path.join(__dirname, '..', 'camoufox', 'camoufox_server.py'));
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
     // 会被拦截导致 camoufox fetch 等清理逻辑失败；spawn 时剥离该注入，不影响正常用户环境。
-    const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN };
+    const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN, BOSSCLAW_DATA_DIR: engineDataDir() };
     if (String(env.PYTHONPATH || '').includes('vendor/shim')) delete env.PYTHONPATH;
     camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT)], {
       stdio: 'ignore',
@@ -914,7 +922,7 @@ function showSystemNotification(title, body) {
   try {
     if (!Notification.isSupported()) return { ok: false, error: 'notification-unsupported' };
     const n = new Notification({
-      title: String(title || 'BossClaw').slice(0, 80),
+      title: String(title || APP_NAME).slice(0, 80),
       body: String(body || '').slice(0, 300),
       icon: APP_ICON.isEmpty() ? undefined : APP_ICON,
     });
@@ -938,12 +946,12 @@ function createTray() {
   try {
     const image = APP_ICON.isEmpty() ? nativeImage.createFromPath(APP_ICON_ICO) : APP_ICON;
     tray = new Tray(image);
-    tray.setToolTip('BossClaw · 后台运行中');
+    tray.setToolTip(`${APP_NAME} · 后台运行中`);
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示主界面', click: () => showMainWindow() },
       { label: '收进托盘', click: () => mainWindow?.hide() },
       { type: 'separator' },
-      { label: '退出 BossClaw', click: () => { isQuitting = true; app.quit(); } },
+      { label: `退出 ${APP_NAME}`, click: () => { isQuitting = true; app.quit(); } },
     ]));
     tray.on('click', () => showMainWindow());
     tray.on('double-click', () => showMainWindow());
@@ -973,9 +981,9 @@ async function createMainWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 680,
-    title: 'BossClaw',
+    title: APP_NAME,
     icon: APP_ICON,
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#d7ede0',
     show: false,
     autoHideMenuBar: true,
     // frame: false — 完全自定义标题栏（含窗口控制按钮），由渲染进程 TitleBar 组件绘制
@@ -1008,7 +1016,7 @@ async function createMainWindow() {
         mainWindow.loadURL(
           'data:text/html;charset=utf-8,' +
             encodeURIComponent(
-              '<html><body style="font-family:sans-serif;padding:40px"><h2>BossClaw 界面加载失败</h2>' +
+              `<html><body style="font-family:sans-serif;padding:40px"><h2>${APP_NAME} 界面加载失败</h2>` +
                 '<p>' + msg.replace(/[<>&"]/g, '') + '</p>' +
                 '<p>请重启应用；若持续出现，请在 desktop-app 目录执行 <code>npm run build</code> 后重试。</p></body></html>'
             )
@@ -1030,7 +1038,7 @@ async function createMainWindow() {
         mainWindow.loadURL(
           'data:text/html;charset=utf-8,' +
             encodeURIComponent(
-              '<html><body style="font-family:sans-serif;padding:40px"><h2>BossClaw 启动失败</h2>' +
+              `<html><body style="font-family:sans-serif;padding:40px"><h2>${APP_NAME} 启动失败</h2>` +
                 '<p>开发服务器未启动，且未找到构建产物 <code>dist/index.html</code>。</p>' +
                 '<p>请在 desktop-app 目录执行 <code>npm run build</code> 或 <code>npm run dev</code> 后重试。</p></body></html>'
             )
@@ -1112,11 +1120,14 @@ async function createMainWindow() {
         { label: '全选', click: () => { try { wc.selectAll(); } catch {} } },
       ];
       if (params.linkURL) {
-        template.push(
-          { type: 'separator' },
-          { label: '在新标签打开链接', click: () => mainWindow?.webContents.send('jc:webview-open-link', { url: params.linkURL }) },
-          { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) },
-        );
+        template.push({ type: 'separator' });
+        if (isHttpBrowserUrl(params.linkURL)) {
+          template.push({
+            label: '在新标签打开链接',
+            click: () => mainWindow?.webContents.send('jc:webview-open-link', { url: params.linkURL }),
+          });
+        }
+        template.push({ label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) });
       }
       // 查看网页源码：主进程取 outerHTML 经 IPC 回传渲染进程，在本页 Modal 展示
       // （不用 wc.viewSource() —— 它会导航 webview 到 view-source: 新页面，体验割裂）。
@@ -1351,6 +1362,8 @@ async function createMainWindow() {
     }, true);
   })();`;
   mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
+    wc.on('will-frame-navigate', blockChromiumErrorNavigation);
+    wc.on('will-redirect', blockChromiumErrorNavigation);
     // ===== 弹窗 / 新标签（target=_blank / window.open）处理：当前标签内导航 =====
     // 根因：Electron <webview> 不会向宿主派发 new-window DOM 事件（webViewEvents 白名单
     // 不含它，渲染层 addEventListener('new-window') 永远不触发），且 webview 未设
@@ -1361,8 +1374,7 @@ async function createMainWindow() {
     // （占位弹窗 / javascript: 等）一律 deny，交页面自身降级，行为与 disablePopups 相同。
     try {
       wc.setWindowOpenHandler(({ url }) => {
-        const u = String(url || '');
-        if (/^https?:\/\//i.test(u)) { try { wc.loadURL(u); } catch {} }
+        if (isHttpBrowserUrl(url)) wc.loadURL(url).catch(() => {});
         return { action: 'deny' };
       });
     } catch {}
@@ -1484,7 +1496,7 @@ async function createMainWindow() {
     if (!trayTipShown) {
       trayTipShown = true;
       if (trayPrefs.notify) {
-        showSystemNotification('BossClaw 仍在后台运行', '已收进系统托盘，定时任务与投递继续执行；右键托盘图标可退出。');
+        showSystemNotification(`${APP_NAME} 仍在后台运行`, '已收进系统托盘，定时任务与投递继续执行；右键托盘图标可退出。');
       }
     }
   });
@@ -1543,15 +1555,17 @@ async function createMainWindow() {
 
   // 拦截新窗口：外部链接交系统浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    if (isHttpBrowserUrl(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
+  mainWindow.webContents.on('will-frame-navigate', blockChromiumErrorNavigation);
+  mainWindow.webContents.on('will-redirect', blockChromiumErrorNavigation);
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const isDevOrigin = url === DEV_URL || url.startsWith(DEV_URL + '/');
     if (!url.startsWith('file://') && !isDevOrigin) {
       event.preventDefault();
-      shell.openExternal(url);
+      if (isHttpBrowserUrl(url)) shell.openExternal(url);
     }
   });
 
@@ -1560,7 +1574,7 @@ async function createMainWindow() {
 
 // 前端请求打开外部链接
 ipcMain.on('jc:open-external', (_event, url) => {
-  if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
+  if (isHttpBrowserUrl(url)) shell.openExternal(url);
 });
 
 // 前端获取应用信息（名称、版本等）
@@ -1781,9 +1795,21 @@ safeHandle('jc:save-pdf-batch', async (event, input, requestId) => {
 // 口径：**每次导出都必须由用户选择保存位置**（不做静默落盘、不记忆目录）。
 // 扩展名走白名单（默认只允许 .csv），避免误导出可执行文件；
 // 文本已由渲染层带上 UTF-8 BOM，Excel / WPS 双击不会中文乱码。
+let tailorCheckpoints;
+function getTailorCheckpoints() {
+  if (!tailorCheckpoints) {
+    const { openTailorCheckpoints } = require('./tailor-checkpoints.cjs');
+    tailorCheckpoints = openTailorCheckpoints(path.join(app.getPath('userData'), 'tailor-checkpoints.sqlite'));
+  }
+  return tailorCheckpoints;
+}
+safeHandle('jc:tailor-checkpoint-read', (_event, id) => getTailorCheckpoints().read(id));
+safeHandle('jc:tailor-checkpoint-write', (_event, id, snapshot) => {
+  getTailorCheckpoints().write(id, snapshot);
+});
+
 safeHandle('jc:save-file', async (_event, defaultName, content, extWhitelist) => {
   const name = String(defaultName || '').trim();
-  const text = String(content ?? '');
   const allowed = (Array.isArray(extWhitelist) && extWhitelist.length ? extWhitelist : ['csv']).map((e) =>
     String(e).replace(/^\./, '').toLowerCase()
   );
@@ -1793,7 +1819,15 @@ safeHandle('jc:save-file', async (_event, defaultName, content, extWhitelist) =>
   if (!allowed.includes(ext)) {
     return { ok: false, error: `不支持的文件类型 .${ext}（仅支持 ${allowed.map((e) => `.${e}`).join(' / ')}）` };
   }
-  if (!text) return { ok: false, error: '导出内容为空' };
+  const payload = ext === 'docx' && ArrayBuffer.isView(content)
+    ? Buffer.from(content.buffer, content.byteOffset, content.byteLength)
+    : ext === 'docx' && content instanceof ArrayBuffer
+      ? Buffer.from(content)
+      : String(content ?? '');
+  if (!payload.length) return { ok: false, error: '导出内容为空' };
+  if (ext === 'docx' && (!Buffer.isBuffer(payload) || payload.length < 4 || payload.length > 10 * 1024 * 1024 || payload.readUInt32LE(0) !== 0x04034b50)) {
+    return { ok: false, error: 'DOCX 内容不合法' };
+  }
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: '导出数据',
     defaultPath: path.join(app.getPath('documents'), name),
@@ -1804,7 +1838,7 @@ safeHandle('jc:save-file', async (_event, defaultName, content, extWhitelist) =>
   });
   if (canceled || !filePath) return { ok: false, canceled: true };
   try {
-    await fs.promises.writeFile(filePath, text, 'utf8');
+    await fs.promises.writeFile(filePath, payload, 'utf8');
     return { ok: true, filePath };
   } catch (e) {
     dlog('error', 'save-file failed', { message: (e && e.message) || String(e) });
@@ -2994,7 +3028,7 @@ ipcMain.on('jc:bridge-control', (_event, type) => {
 // 与 bridge/server.cjs 的 resolveBridgeToken 同口径：env 优先 → 运行时文件 → 生成并落盘。
 // 渲染层经本 IPC 取令牌后以请求头 X-Bossclaw-Token 调用本地桥，避免令牌出现在 URL/日志中。
 function bridgeTokenPath() {
-  return path.join(app.getPath('home'), '.bossclaw', 'bridge-token');
+  return path.join(engineDataDir(), 'bridge-token');
 }
 function resolveBridgeToken() {
   const fromEnv = String(process.env.BOSSCLAW_BRIDGE_TOKEN || '').trim();
@@ -3084,10 +3118,10 @@ app.whenReady().then(async () => {
     dlog('warn', 'second instance blocked', { pid: lock.pid });
     try {
       dialog.showErrorBox(
-        'BossClaw 已在运行',
-        `检测到另一个 BossClaw 窗口（进程 ${lock.pid}）正在使用同一份本地数据。\n` +
+        `${APP_NAME} 已在运行`,
+        `检测到另一个 ${APP_NAME} 窗口（进程 ${lock.pid}）正在使用同一份本地数据。\n` +
           '同时开两个实例会互相覆盖投递队列与进度。\n' +
-          '若窗口已收进系统托盘，请双击托盘里的 BossClaw 图标唤回（或右键托盘图标 → 显示主界面）。'
+          '若窗口已收进系统托盘，请双击托盘图标唤回（或右键托盘图标 → 显示主界面）。'
       );
     } catch {}
     app.quit();

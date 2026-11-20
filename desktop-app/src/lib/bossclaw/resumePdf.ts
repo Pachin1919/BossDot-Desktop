@@ -176,11 +176,15 @@ function renderPhotoBox(photo: string | undefined): string {
 }
 
 // ===== 渲染函数 =====
-function renderContactLine(contact: ResumeDocData['contact']): string {
+const contactLabels = (language: ResumeDocData['language']) =>
+  language === 'en' ? { targetTitle: 'Target role', phone: 'Phone', email: 'Email' }
+    : { targetTitle: '求职意向', phone: '电话', email: '邮箱' };
+
+function renderContactLine(contact: ResumeDocData['contact'], language: ResumeDocData['language']): string {
   const bits: string[] = [];
-  if (contact.targetTitle.trim()) bits.push(`<span><span class="label">求职意向</span>${htmlEscape(contact.targetTitle.trim())}</span>`);
-  if (contact.phone.trim()) bits.push(`<span><span class="label">电话</span>${htmlEscape(contact.phone.trim())}</span>`);
-  if (contact.email.trim()) bits.push(`<span><span class="label">邮箱</span>${htmlEscape(contact.email.trim())}</span>`);
+  for (const [key, label] of Object.entries(contactLabels(language)) as [keyof ReturnType<typeof contactLabels>, string][]) {
+    if (contact[key].trim()) bits.push(`<span><span class="label">${label}</span>${htmlEscape(contact[key].trim())}</span>`);
+  }
   if (!bits.length) return '';
   return `<div class="resume-contact">${bits.join('<span class="sep">|</span>')}</div>`;
 }
@@ -237,10 +241,11 @@ function renderModules(modules: ResumeDocModule[]): string {
 /** 分栏模板（column/dark）：侧栏只放 照片 + 姓名 + 联系方式，七个模块统一走主栏 */
 function renderSplit(data: ResumeDocData): string {
   const { contact, modules, photo } = data;
+  const labels = contactLabels(data.language);
   const contactBits: string[] = [];
-  if (contact.targetTitle.trim()) contactBits.push(`<div>求职意向 ${htmlEscape(contact.targetTitle.trim())}</div>`);
-  if (contact.phone.trim()) contactBits.push(`<div>电话 ${htmlEscape(contact.phone.trim())}</div>`);
-  if (contact.email.trim()) contactBits.push(`<div>邮箱 ${htmlEscape(contact.email.trim())}</div>`);
+  if (contact.targetTitle.trim()) contactBits.push(`<div>${labels.targetTitle} ${htmlEscape(contact.targetTitle.trim())}</div>`);
+  if (contact.phone.trim()) contactBits.push(`<div>${labels.phone} ${htmlEscape(contact.phone.trim())}</div>`);
+  if (contact.email.trim()) contactBits.push(`<div>${labels.email} ${htmlEscape(contact.email.trim())}</div>`);
 
   return (
     `<div class="resume">` +
@@ -257,7 +262,7 @@ function renderSplit(data: ResumeDocData): string {
 
 /** 单栏模板（classic/simple/fresh）：头部左信息右照片（simple 照片在左） */
 function renderStandard(data: ResumeDocData, photoFirst = false): string {
-  const contactLine = renderContactLine(data.contact);
+  const contactLine = renderContactLine(data.contact, data.language);
   const nameBlock =
     `<div class="resume-header-main">` +
     (data.contact.name ? `<h1 class="resume-name">${htmlEscape(data.contact.name)}</h1>` : '') +
@@ -275,13 +280,14 @@ function renderStandard(data: ResumeDocData, photoFirst = false): string {
 export function buildResumeHtml(data: ResumeDocData, templateId = 'classic'): string {
   const tplId = isKnownTemplate(templateId) ? templateId : 'classic';
   const tplCss = TEMPLATE_CSS[tplId] || '';
+  const english = data.language === 'en';
   let body: string;
   if (tplId === 'column' || tplId === 'dark') body = renderSplit(data);
   else if (tplId === 'simple') body = renderStandard(data, true);
   else body = renderStandard(data, false);
   return (
-    `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>` +
-    `${htmlEscape(data.contact.name || '定制简历')} - ${htmlEscape(data.contact.targetTitle || '求职')}</title>` +
+    `<!DOCTYPE html><html lang="${english ? 'en' : 'zh-CN'}"><head><meta charset="utf-8"><title>` +
+    `${htmlEscape(data.contact.name || (english ? 'Resume' : '定制简历'))} - ${htmlEscape(data.contact.targetTitle || (english ? 'Application' : '求职'))}</title>` +
     `<style>${BASE_CSS}${tplCss}</style></head>` +
     `<body class="tpl-${tplId}">${body}</body></html>`
   );

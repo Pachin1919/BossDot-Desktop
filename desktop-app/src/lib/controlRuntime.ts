@@ -492,6 +492,16 @@ const handlers: Record<string, Handler> = {
     const out = await b.readPage(tabId !== undefined ? String(tabId) : undefined);
     return { applied: true, message: '页面文本读取（只读）', next: out };
   },
+  browserReadBossProfile: async () => {
+    const browser = getBrowser();
+    if (!browser?.readBossOnlineProfile) {
+      return { applied: false, message: '请使用工作台的内置 WebView 读取 BOSS 线上资料。' };
+    }
+    const result = await browser.readBossOnlineProfile();
+    return result.ok
+      ? { applied: true, message: '已读取 BOSS 线上意向和经历', next: result.profile }
+      : { applied: false, message: result.error };
+  },
   browserReadJob: async ({ encryptJobId }) => {
     const b = getBrowser();
     const jid = String(encryptJobId ?? '');

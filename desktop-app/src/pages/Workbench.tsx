@@ -42,6 +42,7 @@ import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue, type SearchQueueItem } from '@/lib/bossclaw/searchUrl';
+import { BOSS_ONLINE_RESUME_URL } from '@/lib/bossclaw/bossOnlineProfile';
 import { buildPlatformSearchQueue, bossCriteriaFromQueueItem, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
 import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
@@ -144,9 +145,6 @@ const keywordLabel = (keyword?: string): string => String(keyword || '').trim() 
 /** 无关键字采集前置提醒（该模式下每次启动采集都会记一条日志，并在岗位进度卡内常驻显示） */
 const NO_KEYWORD_SETUP_REMINDER =
   '无关键字采集：岗位由平台按你账号内的求职意向推荐，请先在 BOSS 直聘（网页 / App）内完善在线简历与求职意向，否则可能采到不相关岗位或空结果';
-/** BOSS 在线简历 / 求职意向页（提醒条上的直达入口） */
-const BOSS_RESUME_URL = 'https://www.zhipin.com/web/geek/resume';
-
 const LogStream = memo(function LogStream() {
   const logs = useRuntimeLogsStore((s) => s.logs);
   const formattedLogs = useMemo(() => {
@@ -2899,7 +2897,7 @@ export default function Workbench() {
                     size="small"
                     type="link"
                     style={{ padding: 0, marginLeft: 4, fontSize: 12 }}
-                    onClick={() => webviewApi.current?.openInNewTab(BOSS_RESUME_URL, 'BOSS 在线简历')}
+                    onClick={() => webviewApi.current?.openInNewTab(BOSS_ONLINE_RESUME_URL, 'BOSS 在线简历')}
                   >
                     去完善
                   </Button>

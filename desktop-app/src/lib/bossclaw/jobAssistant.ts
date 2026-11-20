@@ -23,6 +23,7 @@
 //   - AI 输出不达标一律回退本地规则兜底，绝不把招聘方口吻的文本交给用户。
 import type { AppConfig, JobMeta, Profile } from './types';
 import { cachedCallModel, aiFailureKind } from './llm';
+import { isAgentOnline } from './agentAnswer';
 import { reloadSkills, skillInstructionsFor } from './skills';
 import { stableProfileView, fallbackApplicantGreeting, settleGreetingLength } from './matching';
 import { allocateContextBudget, fitContextToTokens } from './contextBudget';
@@ -32,6 +33,7 @@ import { buildSchoolDisclosureRule, hasSchoolMention, resolveSchoolTier } from '
 import { hasFabricatedCommit } from './greetings';
 import { normalizeStringList } from './helpers';
 import { decodeSalaryDigits } from './jobDisplay';
+import { validateTailorEvidence, type TailorEvidenceFinding } from './tailorEvidence';
 import {
   analyzeJdKeywords,
   buildLocalSuggestions,
@@ -124,7 +126,7 @@ export async function writeTailorPointSupplement(input: {
   model: AppConfig['model']; extraMaterials?: string; supplements?: TailorSupplement[];
 }): Promise<TailorPointDraft> {
   if (!input.text.trim()) throw new Error('请先写几句实际技能或经历，再让 AI 整理');
-  if (!input.model?.apiKey) throw new Error('请先配置 AI 模型');
+  if (!input.model?.apiKey && !isAgentOnline()) throw new Error('请先连接 Agent 或配置模型 API');
   const budget = allocateContextBudget(input.model, { resume: 0.4, extra: 0.25, profile: 0.1, text: 0.15, point: 0.1 }, { outputTokens: 1200 });
   const resume = (await prepareContextText(input.resumeText, input.model, {
     tokenBudget: budget.resume, focus: '与当前岗位要点相关的真实技能和经历，保留能力水平、项目职责与数字',
@@ -255,6 +257,7 @@ const TAILOR_REVIEW_OUTPUT_EXAMPLE = `{
   "resume": null,
   "jdPoints": [{ "point": "React 开发经验", "layer": "duty", "verdict": "covered", "evidence": "最终项目经历已写明 React 订单模块" }],
   "matchScore": { "before": 62, "after": 78 },
+  "reviewPassed": true,
   "reviewNote": "摘要原稿罗列了多项技术栈，已改写为「身份 + 1-2 个最相关亮点」；逐条核对 resume 的 source 与 text，未发现超出原文的表述；其余字段保持草稿。"
 }`;
 
@@ -264,7 +267,6 @@ const TAILOR_REVIEW_OUTPUT_EXAMPLE = `{
 export function buildTailorSystemPrompt(greetingInstructions: string, schoolRule = ''): string {
   return `你是求职者的求职助手（不是招聘方）。任务：先读懂目标岗位 JD，再据此定制简历——产出「结构化简历文档（七模块）」「JD 要点对照清单」「定制前/后同口径匹配分」「量化经历要点」「第一人称求职打招呼语（求职信）」与「可执行的优化建议」。
 
-执行顺序：**先把 JD 按四层拆解读完（硬门槛 / 优先条件 / 职责信号 / 团队信号），再开始输出内容**；jdPoints、resume、highlightedSkills 必须是读完 JD 之后的结论，不得跳过拆解直接润色。
 
 铁律：
 1. 定制内容以简历/职业画像/经历补充材料的事实为底色；岗位 JD 是**能力编写与表述的规范来源**（对齐 resume-alchemist：按 JD 关键词编写能力、STAR 润色经历，提升匹配度）。
@@ -289,14 +291,14 @@ ${greetingInstructions}${schoolRule}
 - **没有内容的模块一律返回空数组或空对象，绝不编造内容去填充、也不写"暂无"**。
 - education / internships / works / projects 每项 = { heading, meta, bullets }：heading 是首行（学校 + 专业 | 学历 / 公司 + 岗位 / 项目名 + 一句话定位 | 角色），meta 是第二行元信息（时间 / 「技术栈：…」），bullets 是要点。
 - **每条 bullet 必须带 source**：source 是**原简历或经历补充材料里对应那一条的原文摘录，照抄不改写**。若该条与原文完全一致，source 照抄同样文本；若原文中确实找不到对应内容，source 填空字符串 ""（这类条会在界面上标为「需人工核对」，禁止用来塞进编造内容）。
-- **改写只允许「重新表达」，不允许「新增事实」**：bullet 的 text 超出 source 能支撑的范围即为违规。
+- 正文使用可核对的原文。heading 和 meta 从同一行原文分别截取。bullet、skills 和 selfEval 的 text 与 source 内容必须相同，并且应保留原材料的整行或分号、句号分隔的完整分句。重排、节选用来适配岗位，改写建议写入 suggestions。
 - 按岗位相关性从高到低排列 bullets；每个项目/经历 1-4 条要点，每条不超过 80 字。**bullet 同样受「保留能力描述语」约束**：原文写「负责」「参与」「配合」等动词或「熟练/熟悉」等描述语时，不得改写成无修饰的名词堆叠。
 - skills 为「按类别分组的专业技能」：每项 { text, source }，一组一行，与 JD 相关性高的组排在前面；source 填原简历技能区的原文摘录。**text 必须保留原简历的描述语结构，形如「后端：精通 Java（Spring Boot），熟悉 MyBatis，擅长接口设计」「前端：熟悉 React、TypeScript，沉淀通用组件库」**，即「类别：<描述语><技能>、<描述语><技能>，<描述语><能力/成果>」；**严禁输出成「后端：Java、Spring Boot、MyBatis」这类无描述语的裸技能列表**。按 JD 补充新技能时沿用该组的描述语强度，不得凭空升级为「精通」。组名与分组由你按 JD 与本人真实技能归纳，不得把简历中不存在的技能写进来。
 - honors 为个人荣誉/证书纯文本条目数组；selfEval 为自我评价 { text, source }。
 - **禁止输出空标题、占位符（如「（暂无）」「待补充」）或说明性文字**。
 
 【jdPoints：JD 要点对照清单】
-- 把 JD 拆成四层要点：must 硬门槛（学历/年限/语言/行业背景/远程出差）、prefer 优先条件（「优先/加分/更佳」）、duty 职责信号（每天到底要做什么）、team 团队信号（公司阶段/协作方式）。
+- 为相关要点填写 schema 支持的 layer 字段。区分明确硬性条件和优先条件。
 - 同类合并、总数不超过 20 条，每条 point 不超过 12 字，不要罗列 JD 里的每个词。
 - 每条给 verdict：covered = 简历正文已体现；addable = 职业画像或经历补充材料中真实具备、但简历正文没写；missing = 与候选人真实背景毫无交集、无法合理外推。
 - evidence 一句话（不超过 30 字）说明依据，必须是可核对的简历事实；**不得把「优先/加分」写成硬性不满足**。
@@ -304,7 +306,7 @@ ${greetingInstructions}${schoolRule}
 
 【matchScore：定制前/后同口径匹配分】
 - before = 原简历 + 经历补充材料 + 职业画像 对这份 JD 的匹配度；after = **定制后的 resume 文档** 对这份 JD 的匹配度。
-- 两者必须**基于同一份 jdPoints、用同一套判断标准**：按要点分层加权（硬门槛权重最高，优先条件次之，职责信号再次，团队信号仅作参考），各自给 0-100 整数。
+- 两者必须基于同一份 jdPoints、用同一套判断标准，各自给 0-100 整数。
 - after 只有在定制确实补上了要点时才允许高于 before；**不允许为了好看而抬分**，也不允许两分自动设成差值固定值。若定制没有实质增益，after 与 before 持平即是正确结果。
 
 【输出 schema】只输出以下字段（字段名与类型不可变更）：
@@ -332,6 +334,7 @@ export const TAILOR_REVIEW_SCHEMA = JSON.stringify({
   jdPoints: [{ point: '', layer: 'must|prefer|duty|team', verdict: 'covered|addable|missing', evidence: '' }],
   matchScore: { before: 0, after: 0 },
   reviewNote: null,
+  reviewPassed: false,
 });
 
 export function buildReviewSystemPrompt(schoolRule = ''): string {
@@ -343,7 +346,7 @@ export function buildReviewSystemPrompt(schoolRule = ''): string {
 1. **诚实性红线（最优先，逐条核对 source）**：resume 里每条 bullet 的 text 是否超出了同一条 source 能支撑的范围？education/internships/works/projects 的 heading、meta 是否与原文一致（公司/职位/在职时长、学校/学历/专业、时间不得改动或美化）？是否存在 source 为空、却写了具体事实的条目？是否存在虚构证书/奖项/数字/比例/金额/用户量/时长、或承诺薪资/到岗/面试时间？**触犯任一条必须在 resume 中修订或删除该条**，绝不保留。
 2. ATS 关键词覆盖：JD 高权重关键词（技能/工具/领域术语）是否被真实覆盖？候选人在相关领域确有真实背景时，允许把其真实掌握或相近的泛化能力按 JD 规范名编写为「适配技能」并前置入摘要/经历/技能；与候选人背景毫无交集的关键词不得硬塞，应归入 skillGaps 或在 jdPoints 中记为 missing。
 3. 结构与可排版性：resume 模块齐全且**没有编造出来的空壳模块**（没内容的模块必须是空数组/空对象，不得出现「暂无」「待补充」等占位文字）；bullets 是否按岗位相关性从高到低、每条不超过 80 字。
-4. STAR 与一页适配：tailoredSummary 120-150 字、开头点明身份；tailoredExperiences 2-4 条、一条不超过 80 字；量化只提炼简历已有数字，严禁编造或推算。
+4. 篇幅按岗位内容决定。tailoredSummary 开头点明身份，tailoredExperiences 简明表达个人做过的事。量化只提炼简历已有数字，禁止推算。
 5. 求职信口吻：coverLetter 必须求职者第一人称（以「您好，我想应聘贵公司的{岗位名}」开头），全文 120-250 字（含标点，建议约 150 字，与 greetings.ts::GREETING_LENGTH_RULE 同口径）、单行不换行；项目亮点必须精炼（只挑 1-2 个与岗位最相关的真实项目/技能、禁止罗列技术栈清单）；严禁招聘方口吻（「看到你的简历」「你的经历很匹配我们」「欢迎进一步沟通」「我们团队」「候选人」等），不得承诺薪资、到岗时间、面试时间。**校名披露（只约束 coverLetter，简历正文 resume 中的学校名照抄原文不受此限）**：${schoolRule ? schoolRule.trim() : '院校名称只有简历院校属于 985/211 时才允许写出，其余院校一律不出现任何院校名称或层级字样，只写学历/专业/年级。'}
 6. 建议可执行性：suggestions 3-5 条、基于简历与 JD 的真实差距、每条不超过 40 字。
 7. **能力描述语保真（重点复查项）**：逐条比对 resume.skills 与各模块 bullet 的 text / 同条 source，**原文中的「精通 / 熟练 / 熟悉 / 掌握 / 擅长 / 了解 / 具备…能力 / 沉淀」等描述语是否被保留**？凡是「原文有描述语、text 里却压成了无修饰的技能罗列」（如 source「前端：熟悉 React、TypeScript，沉淀通用组件库」被改成 text「前端：React、TypeScript、通用组件库」），**必须在 resume 中把描述语按 source 原文补回**（可同义替换，不得升级为「精通」），并在 reviewNote 里说明补回了哪几条；同时检查有没有反向错误——把原文的「了解」写成「精通」这类**凭空升级**，也要改回原文强度。
@@ -354,6 +357,8 @@ export function buildReviewSystemPrompt(schoolRule = ''): string {
 
 【输出 schema】只输出以下字段（字段名与类型不可变更；无需修订的字段一律输出 null）：
 ${TAILOR_REVIEW_SCHEMA}
+
+正文复检采用与起草相同的取材要求。heading 和 meta 从同一行原文截取，bullet、skills 和 selfEval 的 text 与 source 相同，须保留完整原文行或完整分句。确实完成核对并确认修订后的正文满足要求时填写 reviewPassed: true，否则填写 false。
 
 【输出样例】（null 表示该字段无需修订、保留草稿；仅示意写法，实际判断须基于草稿内容）：
 ${TAILOR_REVIEW_OUTPUT_EXAMPLE}
@@ -398,6 +403,9 @@ export interface TailorReviewMeta {
 }
 
 export interface TailorResult {
+  evidence?: TailorEvidenceFinding[];
+  reviewCompleted?: boolean;
+  language?: 'zh' | 'en';
   /** 随历史快照保存的多轮补充；老记录没有此字段。 */
   supplements?: TailorSupplement[];
   /** 上一版定制后 AI 分，用于比较本轮补充的实际效果。 */
@@ -701,13 +709,19 @@ export function buildLocalTailorDoc(profile: Profile | null): TailorResumeDoc {
       .map((s) => ({ heading: String(s).slice(0, 120), meta: '', bullets: [] as TailorDocLine[] }));
   return {
     education: blocksOf(facts?.education),
-    internships: blocksOf(facts?.experiences),
-    works: [],
-    projects: blocksOf(facts?.projects),
+    internships: blocksOf(facts?.experiences?.filter((s) => /实习/.test(s))),
+    works: blocksOf(facts?.experiences?.filter((s) => /正式工作|正式任职|全职/.test(s) && !/实习|项目制/.test(s))),
+    projects: blocksOf([...(facts?.projects || []), ...(facts?.experiences || []).filter((s) => /项目制/.test(s) && !/实习/.test(s))]),
     skills: (facts?.skills || []).slice(0, 12).map((s) => ({ text: String(s), source: '' })),
     honors: (facts?.certificates || []).slice(0, 8).map((s) => String(s)),
     selfEval: { text: String(profile?.summary || '').trim(), source: '' },
   };
+}
+
+/** 导出只使用经过复检并绑定原始材料的正文。历史结果可在现有入口重新生成。 */
+export function hasUnexportableTailorContent(result: TailorResult): boolean {
+  return result.method === 'local' || !result.reviewCompleted || !result.evidence?.length
+    || result.evidence.some((finding) => !finding.source);
 }
 
 /**
@@ -731,6 +745,7 @@ export async function tailorForJob(
   const beforeScore = computeMatchScore(keywords, weights, `${resumeText}\n${profileBlob}`);
 
   const extra = String(extraMaterials || '').trim();
+  const language = /[\p{Script=Han}]{2,}/u.test(job.description || job.title || '') ? 'zh' : 'en';
   const supplements = (iteration?.supplements || []).filter((s) => s.text?.trim());
   const supplementText = supplements.map((s, i) => `【第${i + 1}轮用户补充】\n${s.text}`).join('\n\n');
 
@@ -758,11 +773,14 @@ export async function tailorForJob(
       qualifierLoss: [],
       match: buildMatch(),
       method: 'local',
-      warning,
+      language,
+      warning: `${warning} 本地预览仅归类明确标注性质的经历，未标注的经历需人工核对。`,
     };
   };
   if (!profile) return localFallback('尚未生成职业画像，当前为本地规则生成的定制内容。');
-  if (!model?.apiKey) return localFallback('AI 尚未配置，当前为本地规则生成的定制内容。');
+  if (!model?.apiKey && !isAgentOnline()) {
+    return localFallback('Agent 未在线且未配置模型 API，当前为本地预览。');
+  }
 
   // ===== 上下文预算（唯一口径见 contextBudget.ts）=====
   // 简历、导入材料、画像、岗位描述，以及迭代时的用户补充和上一版共享输入预算。
@@ -836,6 +854,8 @@ export async function tailorForJob(
         {
           role: 'user',
           content: `职业画像：${profileCtx}
+输出语言：${language === 'zh' ? '中文' : 'English'}。可投递正文只使用同语言、符合证据规则的材料；其他语言的改写写入建议，待用户核对。`
+            + `
 简历：${resumeCtx}${extraCtx ? `\n\n经历补充材料（求职者本人提供，与简历原文同为真实事实来源）：\n${extraCtx}` : ''}
 ${untrustedJobSection(JSON.stringify(jobView))}${iterationCtx}`,
         },
@@ -875,6 +895,7 @@ ${untrustedJobSection(JSON.stringify(jobView))}${iterationCtx}`,
     let finalAiMatch = draftAiMatch;
     let scoreWarning: string | undefined;
     let reviewMeta: TailorReviewMeta | undefined;
+    let reviewCompleted = false;
     try {
       const review: any = await cachedCallModel(
         [
@@ -961,6 +982,7 @@ ${untrustedJobSection(JSON.stringify(jobView))}
       if (finalTailored.suggestions.join('；') !== draft.suggestions.join('；')) revisedFields.push('优化建议');
       if (reviewedDoc) revisedFields.push('简历文档');
       const note = reviewerText(review?.reviewNote) || undefined;
+      reviewCompleted = review?.reviewPassed === true;
       if (note || revisedFields.length) reviewMeta = { note, revisedFields };
       Object.assign(draft, finalTailored);
     } catch {
@@ -972,6 +994,8 @@ ${untrustedJobSection(JSON.stringify(jobView))}
     const allRewrites = [...rewrites, ...unmatched];
     // 描述语保真兜底检出（只检出、不自动回填；回填措辞交给 AI 复检或人工）
     const qualifierLoss = findQualifierLoss(rewrites);
+    const evidence = validateTailorEvidence(finalDoc, resumeText, extra);
+    const evidenceIssues = evidence.filter((finding) => finding.issue);
 
     return {
       ...draft,
@@ -983,6 +1007,8 @@ ${untrustedJobSection(JSON.stringify(jobView))}
       rewrites: allRewrites,
       qualifierLoss,
       review: reviewMeta,
+      reviewCompleted,
+      evidence,
       coverLetter: await settleGreetingLength(draft.coverLetter, {
         job,
         profile,
@@ -992,10 +1018,13 @@ ${untrustedJobSection(JSON.stringify(jobView))}
       }),
       match: buildMatch(),
       method: 'ai',
+      language,
       // AI 首次返回的 JSON 不完整、已由二次补齐修复时，提示（内容仍来自 AI，非降级）
       // M-20：unmatched（无原文支撑、挂不上 source 的条目）并入了交付结果，必须给出人工核对提示，
       // 否则「编造 bullet」会静默混进定制稿。
-      warning: scoreWarning || (unmatched.length
+      warning: !reviewCompleted ? '模型复检未完成，结果仅供查看。'
+        : evidenceIssues.length ? `有 ${evidenceIssues.length} 处正文未通过原文校验，结果仅供查看。`
+        : scoreWarning || (unmatched.length
         ? `有 ${unmatched.length} 条定制内容在原文中找不到对应来源（已在「逐条对照」中标为需人工核对），请核对后再使用。`
         : (result as any)?._repaired
           ? 'AI 首次返回的 JSON 不完整，已通过自动补齐修复（结果仍来自 AI）。'

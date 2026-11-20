@@ -31,7 +31,7 @@ function pickMimeError(e: unknown): string {
   const name = (e as { name?: string })?.name || '';
   const msg = String((e as Error)?.message || e);
   if (name === 'NotAllowedError' || /permission|denied/i.test(msg)) {
-    return '麦克风权限被拒绝。请在系统设置里允许 BossClaw 使用麦克风后重试。';
+    return '麦克风权限被拒绝。请在系统设置里允许 BossDot 使用麦克风后重试。';
   }
   if (name === 'NotFoundError' || /no.*device|not found/i.test(msg)) {
     return '没有找到可用的麦克风设备。';

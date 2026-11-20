@@ -1,11 +1,13 @@
 {
   "mcpServers": {
-    "bossclaw": {
-      "command": "E:\\Node.js\\node.exe",
+    "bossdot": {
+      "command": "node",
       "args": [
-        "F:\\projects\\Boss-claw\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"
+        "mcp/bossclaw-mcp/bin/bossclaw-mcp.mjs"
       ],
-      "env": {}
+      "env": {
+        "BOSSCLAW_EXE": "desktop-app/release/win-unpacked/BossDot.exe"
+      }
     }
   }
 }

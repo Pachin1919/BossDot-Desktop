@@ -3,7 +3,7 @@
 // 用法：node bin/bossclaw-mcp.mjs
 // 环境变量：
 //   BOSSCLAW_REPO      覆盖仓库根路径（默认由本文件位置推导）
-//   BOSSCLAW_USERDATA  覆盖 Electron userData 目录（默认 %APPDATA%/BossClaw）
+//   BOSSCLAW_USERDATA  覆盖 Electron userData 目录（默认 %APPDATA%/BossDot）
 //   BOSSCLAW_MCP_DEBUG 置 1 时把 stderr 日志也写一份到 mcp/bossclaw-mcp/mcp-debug.log
 import { createServer } from '../src/server.mjs';
 import { allTools, validateTools } from '../src/tools/index.mjs';
@@ -16,7 +16,7 @@ if (!ok) {
 }
 
 const instructions = [
-  'BossClaw 应用操作 MCP —— 让 agent 只能**控制已安装的 BossClaw 桌面应用**（如 <安装目录>）：启动/停止/运行状态 + 实时内存状态 + 白名单动作。不提供任何测试/开发类能力。',
+  'BossDot 本机应用控制（复用 BossClaw MCP 工具名）。支持启动、查看状态和执行白名单动作。',
   '',
   `应用目录：${DESKTOP_DIR}`,
   `应用数据目录：${PATHS.userData}`,

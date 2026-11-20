@@ -253,8 +253,8 @@ function stamp(ts: number): { date: string; time: string } {
   };
 }
 
-/** 例：BossClaw-岗位明细-近7天-20260913.csv */
+/** 例：BossDot-岗位明细-近7天-20260913.csv */
 export function exportFilename(kind: ExportKind, snapshot: StatsSnapshot, ext: 'csv' | 'pdf'): string {
   const { date } = stamp(snapshot.generatedAt);
-  return `BossClaw-${KIND_LABEL[kind]}-${snapshot.range.slug}-${date}.${ext}`;
+  return `BossDot-${KIND_LABEL[kind]}-${snapshot.range.slug}-${date}.${ext}`;
 }

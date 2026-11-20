@@ -64,7 +64,7 @@ export default memo(function Sidebar() {
   };
 
   return (
-    <nav className={'side-rail' + (collapsed ? ' is-collapsed' : '')}>
+    <nav aria-label="主导航" className={'side-rail' + (collapsed ? ' is-collapsed' : '')}>
       <div className="rail-header">
         {!collapsed && <span className="rail-label">导航</span>}
         <Tooltip
@@ -88,11 +88,10 @@ export default memo(function Sidebar() {
         const btn = (
           <button
             key={it.key}
+            aria-label={it.label}
+            aria-current={active === it.key ? 'page' : undefined}
             className={'nav-btn' + (active === it.key ? ' is-active' : '')}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              setRoute(it.key);
-            }}
+            onClick={() => setRoute(it.key)}
           >
             <span className="nav-icon">{NAV_ICONS[it.key]}</span>
             {!collapsed && <span className="nav-label">{it.label}</span>}

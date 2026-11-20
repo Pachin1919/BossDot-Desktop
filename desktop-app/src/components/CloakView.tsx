@@ -25,7 +25,7 @@ import {
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { PLATFORM_META, PLATFORM_IDS, platformEnabled, type JobPlatform } from '@/lib/bossclaw/platforms';
-import { isWhitelistedUrl } from '@/lib/bossclaw/browserWhitelist';
+import { isChromiumErrorUrl, isHttpBrowserUrl, isWhitelistedUrl } from '@/lib/bossclaw/browserWhitelist';
 
 const BOSS_HOME = 'https://www.zhipin.com';
 const MAX_TABS = 15;
@@ -302,6 +302,7 @@ export default function CloakView(props: Props) {
 
   // 白名单拦截：非招聘平台网址不允许在内置隐身浏览器访问，可转系统浏览器
   const confirmOpenExternal = useCallback((url: string) => {
+    if (!isHttpBrowserUrl(url)) return;
     const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
     Modal.confirm({
       title: '该网址不在招聘平台白名单内',
@@ -315,8 +316,8 @@ export default function CloakView(props: Props) {
   // ===== 用户级入口：地址栏前往 =====
   const navigate = useCallback(async (raw: string) => {
     let target = raw.trim();
-    if (!target) return;
-    if (!/^https?:\/\//.test(target)) target = 'https://' + target;
+    if (!target || isChromiumErrorUrl(target)) return;
+    if (!/^https?:\/\//i.test(target)) target = 'https://' + target;
     if (!isWhitelistedUrl(target)) { confirmOpenExternal(target); return; }
     const ready = await ensureCloakEngine();
     if (!ready) {
@@ -520,7 +521,7 @@ export default function CloakView(props: Props) {
   }, [activeTab, ensureCloakEngine]);
 
   const handleOpenExternal = useCallback(() => {
-    if (activeTab?.url) e.openExternal?.(activeTab.url);
+    if (activeTab?.url && isHttpBrowserUrl(activeTab.url)) e.openExternal?.(activeTab.url);
   }, [activeTab]);
 
   const activeEvents = useMemo(() => activeTab?.events?.slice(-30) || [], [activeTab]);

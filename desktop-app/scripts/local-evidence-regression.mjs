@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const dir = mkdtempSync(join(tmpdir(), 'bossclaw-evidence-'));
+try {
+  const outfile = join(dir, 'test.cjs');
+  await build({ stdin: { contents: "export * from './jobAssistant'; export * from './tailorEvidence';", resolveDir: resolve('src/lib/bossclaw') }, bundle: true, platform: 'node', format: 'cjs', outfile, tsconfig: 'tsconfig.json', logLevel: 'silent' });
+  const { buildLocalTailorDoc, hasUnexportableTailorContent, validateTailorEvidence } = createRequire(import.meta.url)(outfile);
+  const doc = buildLocalTailorDoc({ facts: { experiences: ['甲公司；正式工作', '乙公司；项目制合作', '丙公司；实习'], projects: [], education: [], skills: [], certificates: [] }, summary: '' });
+  assert.equal(doc.works[0].heading, '甲公司；正式工作');
+  assert.equal(doc.projects[0].heading, '乙公司；项目制合作');
+  assert.equal(doc.internships[0].heading, '丙公司；实习');
+  const resumeText = '甲公司；正式工作｜2024.02–2024.08\n乙公司；项目制合作\n丙公司；实习\n- 整理岗位素材\n待学习 SQL\n商科课程证书';
+  doc.works[0].heading = '甲公司';
+  doc.works[0].meta = '2024.02–2024.08';
+  doc.works[0].bullets.push({ text: '整理岗位素材', source: '整理岗位素材' });
+  doc.honors.push('商科课程证书');
+  const makeResult = () => ({ method: 'ai', doc, reviewCompleted: true, evidence: validateTailorEvidence(doc, resumeText) });
+  assert.equal(hasUnexportableTailorContent({ method: 'local', doc }), true);
+  assert.equal(hasUnexportableTailorContent({ ...makeResult(), reviewCompleted: false }), true);
+  assert.equal(hasUnexportableTailorContent(makeResult()), false);
+  doc.skills.push({ text: '熟悉 SQL', source: '' });
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '空来源必须阻断');
+  doc.skills[0].source = '熟悉 SQL';
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '伪造摘录必须阻断');
+  doc.skills[0].source = '整理岗位素材';
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '无关但真实的摘录必须阻断');
+  doc.skills[0] = { text: '学习 SQL', source: '学习 SQL' };
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '不可截掉待完成前缀');
+  doc.skills.length = 0;
+  doc.internships.push(doc.works[0]);
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '显式正式经历不可写进实习');
+  doc.internships.pop();
+  doc.works[0].meta = '2024.02–2024.09';
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '改掉原文日期必须阻断');
+  doc.works[0].meta = '2024.02–2024.08';
+  doc.honors.push('虚构奖项');
+  assert.equal(hasUnexportableTailorContent(makeResult()), true, '荣誉也需溯源');
+  console.log('PASS: 分类、空来源、伪造摘录、无关摘录、截断限定、日期与荣誉校验');
+} finally { rmSync(dir, { recursive: true, force: true }); }

@@ -44,6 +44,7 @@ const RENDERER_ACTIONS = [
   'browserSearch',
   'browserOpenJob',
   'browserReadPage',
+  'browserReadBossProfile',
   'browserReadJob',
   'browserDomDump',
   // 投递（半自动 / 跟随 executionMode 的全自动）
@@ -194,7 +195,7 @@ export const controlTools = [
       '  - agent 代答（常规用法请走专用工具 bossclaw_agent_tasks / bossclaw_agent_submit / bossclaw_agent_cancel）：' +
       'agentTasks{waitMs?,includeMessages?,limit?}｜agentSubmit{id,content}｜agentCancel{id,reason?}\n' +
       '  - 浏览器只读探索（webview 引擎可用）：browserSearch{query,city?,page?,pageSize?}｜browserOpenJob{url,tabId?}｜' +
-      'browserReadPage{tabId?}｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
+      'browserReadPage{tabId?}｜browserReadBossProfile{}（返回线上意向、工作与项目经历）｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
       '  - 投递：deliverySetMode（**已禁用**：执行模式受保护，只能由用户在应用设置页切换）｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
       'deliverySendNow{greeting?}（仅 executionMode==\'auto\' 且复用安全引擎）\n' +
       '  - 通用 UI 接管（scope:"app" 操作应用界面 / "webview" 操作右栏 BOSS 页；禁止任意脚本与跳转）：uiSnapshot{scope?,selector?,limit?}｜' +

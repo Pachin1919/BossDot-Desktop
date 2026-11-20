@@ -58,6 +58,8 @@ interface ElectronBridgeApi {
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  tailorCheckpointRead?: (id: string) => Promise<string | null>;
+  tailorCheckpointWrite?: (id: string, snapshot: string) => Promise<void>;
   savePdfBatch?: (items: Array<{ fileName: string; html: string }>, requestId: string) => Promise<{
     ok: boolean; canceled?: boolean; directory?: string; error?: string; total?: number;
     results: Array<{ fileName: string; ok: boolean; filePath?: string; error?: string }>;
@@ -67,7 +69,7 @@ interface ElectronBridgeApi {
   // 通用文本导出（CSV）：主进程弹系统保存对话框由用户选择保存位置后写盘
   saveFile?: (
     defaultName: string,
-    content: string,
+    content: string | ArrayBuffer,
     extWhitelist?: string[]
   ) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   // 统计数据报表 PDF：A4 横版 printToPDF + 系统保存对话框
