@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware';
 import { createSafePersistStorage } from '@/lib/persistSafe';
 import type { AppConfig } from '@/lib/bossclaw/types';
 import { DEFAULT_CONFIG } from '@/lib/bossclaw/defaults';
-import { PROVIDER_DEFAULTS, type LLMProvider } from '@/lib/bossclaw/providerPresets';
+import { PROVIDER_DEFAULTS, resolveModelTarget, type LLMProvider } from '@/lib/bossclaw/providerPresets';
 import {
   applyMigrations,
   extractLegacyBatchDelivery,
@@ -36,9 +36,11 @@ export function consumeLegacyBatchDelivery(): LegacyBatchDelivery | null {
 
 interface SettingsState {
   config: AppConfig;
+  savedModelConfigs: Partial<Record<LLMProvider, AppConfig['model']>>;
   setConfig: (patch: Partial<AppConfig>) => void;
   setModel: (patch: Partial<AppConfig['model']>) => void;
   applyProviderDefaults: (p: LLMProvider) => void;
+  selectProvider: (p: LLMProvider) => void;
   isLLMConfigured: () => boolean;
 }
 
@@ -46,6 +48,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       config: DEFAULT_CONFIG,
+      savedModelConfigs: {},
       setConfig: (patch) => set((s) => ({ config: { ...s.config, ...patch } })),
       setModel: (patch) => set((s) => ({ config: { ...s.config, model: { ...s.config.model, ...patch } } })),
       applyProviderDefaults: (p) =>
@@ -57,12 +60,31 @@ export const useSettingsStore = create<SettingsState>()(
               provider: p,
               baseUrl: PROVIDER_DEFAULTS[p].baseUrl,
               model: PROVIDER_DEFAULTS[p].model,
+              apiKey: p === s.config.model.provider ? s.config.model.apiKey : '',
+              thinking: { enabled: false, effort: '' },
             },
           },
         })),
+      selectProvider: (p) => set((s) => {
+        const current = s.config.model;
+        if (current.provider === p) return s;
+        const preset = PROVIDER_DEFAULTS[p];
+        const model = s.savedModelConfigs[p] ?? {
+          ...current,
+          provider: p,
+          baseUrl: preset.baseUrl,
+          model: preset.model,
+          apiKey: '',
+          thinking: { enabled: false, effort: '' },
+        };
+        return {
+          savedModelConfigs: { ...s.savedModelConfigs, [current.provider]: current, [p]: undefined },
+          config: { ...s.config, model },
+        };
+      }),
       isLLMConfigured: () => {
         const { model } = get().config;
-        return Boolean(model.apiKey && model.baseUrl && model.model);
+        return Boolean(model.apiKey?.trim() && resolveModelTarget(model)?.model);
       },
     }),
     {

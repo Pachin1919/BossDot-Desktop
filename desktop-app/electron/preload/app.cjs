@@ -126,7 +126,7 @@ const api = {
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
-  llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
+  llmProxy: (url, payload, apiKey, timeoutMs, method) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs, method),
 
   // ===== 模拟面试（会话文件存于 <userData>/mock-interview/，不进 localStorage）=====
   // 列表 / 读取 / 写入 / 删除 / 清空 / 导出 / 目录占用。写入带 seq，主进程拒绝更旧的迟到包。

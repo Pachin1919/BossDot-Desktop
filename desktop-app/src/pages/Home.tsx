@@ -205,7 +205,7 @@ export default function Home() {
   const statusCells = [
     { icon: <ThunderboltOutlined />, label: '投递引擎', value: autoAssist ? '运行中' : '已停止', on: autoAssist },
     { icon: <GlobalOutlined />, label: 'BOSS 登录', value: bossLoggedIn === true ? '已登录' : bossLoggedIn === false ? '未登录' : '检测中', on: bossLoggedIn === true },
-    { icon: <ApiOutlined />, label: '本地桥接', value: bridgeStatus === 'connected' ? '已连接' : '未连接', on: bridgeStatus === 'connected' },
+    { icon: <ApiOutlined />, label: 'OpenClaw', value: bridgeStatus === 'connected' ? '已连接' : '未连接', on: bridgeStatus === 'connected' },
     { icon: <RocketOutlined />, label: 'LLM', value: llmReady ? '已配置' : '未配置', on: llmReady },
     { icon: <AimOutlined />, label: '投递方向', value: directionPlan?.confirmed ? '已确认' : '未确认', on: Boolean(directionPlan?.confirmed) },
   ];

@@ -4,7 +4,7 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage, Tray, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, net, clipboard, dialog, nativeImage, Tray, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -2718,7 +2718,7 @@ safeHandle('jc:fetch-url', async (_event, url) => {
 // 渲染层不再直连 provider（规避部分端点 CORS 失败、统一主进程超时/错误口径），经此转发。
 // M-1：允许本机地址（本地模型服务如 Ollama），但**公网必须 https**（防 API Key 明文传输）；
 //     响应体加 32MB 上限（L-2），避免超大响应撑爆主进程内存。
-safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000) => {
+safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000, method = 'POST') => {
   const chk = outboundUrlCheck(url, { allowLoopback: true, requireHttpsOffLoopback: true });
   if (!chk.ok) return { ok: false, status: 0, text: '', error: chk.error };
   const target = chk.url;
@@ -2727,15 +2727,22 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
   const key = String(apiKey || '').trim();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 90000));
+  const readOnly = method === 'GET';
   try {
-    const res = await fetch(target, {
-      method: 'POST',
+    // Chromium follows the OS proxy/PAC configuration used by the desktop app.
+    const res = await net.fetch(target.toString(), {
+      method: readOnly ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      body: readOnly ? undefined : typeof payload === 'string' ? payload : JSON.stringify(payload),
+      credentials: 'omit',
+      redirect: 'error',
       signal: ctrl.signal,
     });
     const text = await readResponseTextCapped(res);
-    return { ok: res.ok, status: res.status, text };
+    return {
+      ok: res.ok, status: res.status, text,
+      requestId: res.headers.get('x-request-id') || res.headers.get('x-siliconcloud-trace-id') || undefined,
+    };
   } catch (e) {
     const msg = String((e && e.message) || e);
     const timedOut = /aborted?|timeout/i.test(msg);

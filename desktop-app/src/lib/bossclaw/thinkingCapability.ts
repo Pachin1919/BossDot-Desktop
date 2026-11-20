@@ -81,8 +81,10 @@ const GLM_ALWAYS_ON: ThinkingProfile = {
   mode: 'always-on',
   on: { thinking: { type: 'enabled' } },
   off: null,
-  efforts: [],
-  note: 'GLM-5.3 思考固定开启（传 disabled 会请求失败），仅可关闭其强度调节',
+  effortField: 'reasoning_effort',
+  efforts: ['low', 'high', 'max'],
+  defaultEffort: 'low',
+  note: 'GLM-5.3 始终启用推理，可调整强度',
 };
 
 /** Qwen3.8：开关是顶层布尔 enable_thinking，强度 reasoning_effort */
@@ -118,7 +120,7 @@ const OPENAI_56: ThinkingProfile = {
   efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
   defaultEffort: 'medium',
   effortLabels: { low: '快速', medium: '标准', high: '高', xhigh: '更高', max: '最高' },
-  note: 'GPT-5.6 通过 reasoning_effort 控制（none 即关闭思考）',
+  note: '该模型支持关闭推理，也可选择推理强度',
 };
 
 /** GPT-6 Astra：官方只提供 low…max，无法关闭 */
@@ -130,7 +132,14 @@ const OPENAI_ASTRA: ThinkingProfile = {
   efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
   defaultEffort: 'medium',
   effortLabels: { low: '快速', medium: '标准', high: '高', xhigh: '更高', max: '最高' },
-  note: 'GPT-6 Astra 推理固定开启，本应用只调整强度',
+  note: '该模型始终启用推理，可调整强度',
+};
+
+const SILICONFLOW_DEEPSEEK: ThinkingProfile = {
+  ...QWEN38,
+  efforts: ['high', 'max'],
+  defaultEffort: 'high',
+  note: '硅基流动使用 enable_thinking 开关及 high、max 两档推理强度',
 };
 
 /**
@@ -144,27 +153,30 @@ export function resolveThinkingProfile(
 ): ThinkingProfile {
   const name = String(modelName || '').trim().toLowerCase();
   if (!name) return UNSUPPORTED;
-  const url = String(baseUrl || '').toLowerCase();
-  const isDeepSeekEndpoint = provider === 'deepseek' || url.includes('deepseek');
+  const isDeepSeekEndpoint = provider === 'deepseek' || /^https:\/\/api\.deepseek\.com(?:\/|$)/i.test(baseUrl || '');
 
   // ---- DeepSeek（自建端点或任何域名含 deepseek 的中转）----
   if (isDeepSeekEndpoint && name.startsWith('deepseek')) return DEEPSEEK;
 
   // ---- OpenAI ----
-  if (name.startsWith('gpt-6-astra')) return OPENAI_ASTRA;
-  if (/^gpt-5\.6/.test(name)) return OPENAI_56;
-  if (/^gpt-5\.5/.test(name)) return OPENAI_56;
+  if (provider === 'openai' || /^https:\/\/api\.openai\.com(?:\/|$)/i.test(baseUrl || '')) {
+    if (/^gpt-6(?:\.2)?-astra|^gpt-6\.[12]-sol/.test(name)) return OPENAI_ASTRA;
+    if (/^gpt-6(?:-luna|-sol|\.1-terra)|^gpt-5\.[456]/.test(name)) return OPENAI_56;
+  }
 
   // ---- 智谱 GLM ----
-  if (/^glm-5\.3(?!-)/.test(name)) return GLM_ALWAYS_ON;
-  if (/^glm-5\.3-flash/.test(name)) return GLM;
-  if (/^glm-(5|4\.7|4\.6)/.test(name)) return GLM;
+  if (provider === 'zhipu' && /^glm-5\.3(?:$|-\d)/.test(name)) return GLM_ALWAYS_ON;
+  if (provider === 'zhipu' && /^glm-(5|4\.7|4\.6)/.test(name)) return GLM;
 
   // ---- 通义千问 ----
-  if (/^qwen3\.8-/.test(name)) return QWEN38;
+  if (provider === 'qwen' && /^qwen3\.8-/.test(name)) return QWEN38;
+  if (provider === 'qwen' && /^qwen(?:4-max|3\.7-|-(?:plus|flash))/.test(name)) {
+    return { ...QWEN38, efforts: [], note: '该千问模型通过 enable_thinking 启用或关闭推理' };
+  }
 
   // ---- 火山方舟豆包 ----
-  if (name.startsWith('doubao-seed')) return DOUBAO_SEED;
+  if (provider === 'volces' && name.startsWith('doubao-seed')) return DOUBAO_SEED;
+  if (provider === 'siliconflow' && name === 'deepseek-ai/deepseek-v4-flash') return SILICONFLOW_DEEPSEEK;
 
   // 其余（硅基流动的 组织/模型 全名、自定义模型、已退役名等）一律不做猜测
   return UNSUPPORTED;

@@ -6,7 +6,7 @@ import { electronApi } from '@/lib/electronApi';
 import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
-import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
+import { resolveModelCatalog, resolveModelTarget } from './providerPresets';
 import { contextBudgetSignature } from './contextBudget'; // 缓存 key 需含上下文预算口径（见 cachedCallModel）
 
 export class AIError extends Error {
@@ -342,26 +342,23 @@ function withNudge(messages: ChatMessage[], nudge: string): ChatMessage[] {
 
 
 // P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
-// 不再渲染层直连 fetch 规避 CORS；经 electronApi.llmProxy → preload → 主进程 Node fetch 转发。
+// 经 preload 交给 Electron 主进程的 Chromium 网络栈，继承系统代理配置。
 
 interface HttpResponseLike {
   ok: boolean;
   status: number;
-  text: () => Promise<string>;
+  text: string;
+  requestId?: string;
 }
 
-async function requestModel(url: string, payload: any, apiKey: string, timeoutMs: number): Promise<HttpResponseLike> {
+async function requestModel(url: string, payload: Record<string, unknown> | null, apiKey: string, timeoutMs: number): Promise<HttpResponseLike> {
   try {
-    const r = await electronApi.llmProxy(url, payload, apiKey, timeoutMs);
+    const r = await electronApi.llmProxy(url, payload, apiKey, timeoutMs, payload === null ? 'GET' : 'POST');
     if (!r.ok && r.error) {
       if (r.error === 'timeout') throw new AIError('AI_TIMEOUT', 'AI 请求超时');
-      throw new AIError('AI_NETWORK', `AI 网络请求失败：${r.error}`);
+      throw new AIError('AI_NETWORK', `无法连接模型服务。请检查服务地址和系统网络（${r.error}）`);
     }
-    return {
-      ok: r.ok,
-      status: r.status,
-      text: () => Promise.resolve(r.text),
-    };
+    return r;
   } catch (error: any) {
     if (error instanceof AIError) throw error;
     throw new AIError('AI_NETWORK', `AI 网络请求失败：${error?.message || '连接异常'}`);
@@ -373,48 +370,6 @@ const REPAIR_JSON_SYSTEM =
   '请把它修复、补全为一段合法且完整的 JSON：保持原有字段名与层级不变，只补全被截断的结构，' +
   '不得凭想象新增原内容中不存在的字段或事实，不得改写已有取值。' +
   '只输出 json，不要任何解释、不要代码块围栏。';
-
-/**
- * 二次 AI 补全：当首次输出 JSON 无法解析或被截断时，用一次低成本调用让模型把残缺/损坏的 JSON 补齐修正。
- * @param opts.maxTokens 补齐调用的输出上限（截断场景应比首次更大，避免再次被截断）
- * @param opts.systemPrompt 原始 system 提示词（含目标 JSON 结构样例）。带上它可让模型按正确 Schema 补全，
- *                          而不是自由发挥——截断补齐场景尤其重要。
- * 失败返回 null（由调用方决定如何降级）。直接走 requestModel，不递归 callModel，杜绝递归。
- */
-async function repairJsonViaModel(
-  url: string,
-  brokenContent: string,
-  originalPayload: any,
-  apiKey: string,
-  timeoutMs: number,
-  opts: { maxTokens?: number; systemPrompt?: string } = {}
-): Promise<any | null> {
-  const content = String(brokenContent || '').trim();
-  if (content.length < 12 || !/[[{]/.test(content)) return null; // 太短/不像 JSON，不值得二次调用
-  const schemaHint = String(opts.systemPrompt || '').trim();
-  const requested = Number(opts.maxTokens ?? originalPayload.max_tokens ?? 600);
-  const payload = {
-    ...originalPayload,
-    messages: [
-      { role: 'system', content: schemaHint ? `${schemaHint}\n\n${REPAIR_JSON_SYSTEM}` : REPAIR_JSON_SYSTEM },
-      { role: 'user', content: content.slice(0, 8000) },
-    ],
-    temperature: 0,
-    max_tokens: Math.min(Math.max(600, requested), MODEL_MAX_OUTPUT_TOKENS),
-    response_format: { type: 'json_object' },
-  };
-  delete payload.thinking; // 修复不需要思考模式
-  try {
-    const r = await requestModel(url, payload, apiKey, timeoutMs);
-    const body = await r.text();
-    if (!r.ok) return null;
-    const parsed = JSON.parse(body);
-    const repaired = String(parsed?.choices?.[0]?.message?.content || '').trim();
-    return repaired ? extractJson(repaired) : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 模型名配错时的可操作提示。
@@ -430,6 +385,36 @@ function modelNameHint(status: number, bodyText: string): string {
   const supported = matched[1].replace(/\s+/g, ' ').trim();
   if (!supported) return '';
   return `\n提示：当前端点只支持模型 ${supported}。请在「设置 → 大模型服务商与 API 接入」把「模型名称」改成上述之一（也可点「服务商预设」重新套用官方默认模型名）。`;
+}
+
+function modelHttpError(response: HttpResponseLike, apiKey: string): AIError {
+  const { status, text: bodyText, requestId } = response;
+  let providerMessage = '';
+  let providerCode = '';
+  try {
+    const body = JSON.parse(bodyText);
+    providerMessage = String(body?.error?.message ?? body?.message ?? '')
+      .split(apiKey).join('[已隐藏]').replace(/sk-[\w*.-]{8,}/g, '[已隐藏]');
+    providerCode = String(body?.error?.code ?? body?.code ?? body?.error?.type ?? '');
+    if (!/^[\w.-]{1,80}$/.test(providerCode)) providerCode = '';
+  } catch {
+    // HTML and unrelated gateway responses may contain credentials or debugging details.
+  }
+  const quota = /insufficient_quota|billing|quota|balance|余额|欠费/i.test(`${providerCode} ${providerMessage}`);
+  const modelMissing = /model_not_found|modelnotopen/i.test(providerCode);
+  const hint = /context_length_exceeded/i.test(providerCode) ? '输入超过模型的上下文上限。请减少本地输入用量。'
+    : quota || status === 402 ? '请检查服务商余额、计费或用量上限'
+    : status === 401 ? '请检查密钥、服务商和接入地址是否配套'
+    : modelMissing ? '请检查模型 ID 和账号对该模型的访问权限'
+    : status === 403 ? '请检查账号权限、项目及接入地域'
+    : status === 404 ? '请检查接口地址和模型 ID'
+    : status === 429 ? '服务商限流，请稍后重试'
+    : status >= 500 ? '服务商暂不可用，请稍后重试'
+    : '请检查模型和接口参数';
+  const diagnostic = [providerCode, providerMessage.slice(0, 350), requestId ? `请求 ID ${requestId}` : ''].filter(Boolean).join(' · ');
+  return new AIError('AI_HTTP', `HTTP ${status} · ${hint}${diagnostic ? `\n${diagnostic}` : ''}${modelNameHint(status, providerMessage)}`, {
+    status, providerCode, requestId,
+  });
 }
 
 /**
@@ -478,7 +463,8 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
       timeoutMs: Number(options.timeoutMs || 90000),
     });
   }
-  const url = `${String(config.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
+  const target = resolveModelTarget(config);
+  if (!target?.model) throw new AIError('AI_CONFIG', '请填写有效的模型 ID 和 HTTPS 接入地址。本机端点也可使用 HTTP。');
   // DeepSeek V4 系列默认开启思考模式（官方文档：thinking 默认 enabled，effort 默认 high），
   // 思维链放在 reasoning_content、最终答案放 content；max_tokens 偏小时 content 会为空。
   // 本项目默认需要模型直接输出结构化 JSON，故默认显式关闭思考，确保答案落在 content 字段。
@@ -486,9 +472,10 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   //   · unsupported（未验证支持的模型）→ 不发送任何思考参数（用户开着开关也不发，fail-safe）；
   //   · toggleable → 按 config.thinking.enabled 发开启/关闭片段；
   //   · always-on（如 glm-5.3 / GPT-6 Astra）→ 只发开启片段，且不发关闭片段（传 disabled 会 400）。
-  const thinkingProfile = resolveThinkingProfile(config.provider, config.model, config.baseUrl);
+  const thinkingProfile = resolveThinkingProfile(config.provider, target.model, target.url);
   const thinkingActive = isThinkingActive(thinkingProfile, config.thinking);
-  const thinkingEffort = String(config.thinking?.effort || thinkingProfile.defaultEffort || '');
+  const configuredEffort = config.thinking?.effort || '';
+  const thinkingEffort = thinkingProfile.efforts.includes(configuredEffort) ? configuredEffort : thinkingProfile.defaultEffort;
   const timeoutMs = Number(options.timeoutMs || 90000);
   const temperature = Number(options.temperature ?? config.temperature ?? 0.1);
 
@@ -499,8 +486,8 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   let usageSeen = false;
   const recordUsage = (usage: any): void => {
     if (!usage || typeof usage !== 'object') return;
-    const hit = Number(usage.prompt_cache_hit_tokens || 0);
-    const miss = Number(usage.prompt_cache_miss_tokens || 0);
+    const hit = Number(usage.prompt_cache_hit_tokens ?? usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0);
+    const miss = Number(usage.prompt_cache_miss_tokens ?? (Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) - hit));
     usageSeen = true;
     usageHit += hit;
     usageMiss += miss;
@@ -510,66 +497,76 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   };
 
   /** 单次往返：发请求 → 网关不支持 response_format 时降级重发 → 取出 content / finish_reason。 */
-  const requestOnce = async (over: { maxTokens?: number; nudge?: string } = {}) => {
-    const payload: any = {
-      model: config.model || DEFAULT_MODEL_NAME, // P1-10：兜底模型名引用 providerPresets 单源
-      messages: over.nudge ? withNudge(effectiveMessages, over.nudge) : effectiveMessages,
-      temperature,
-      max_tokens: over.maxTokens ?? baseMaxTokens,
-    };
-    if (jsonMode) payload.response_format = { type: 'json_object' };
-    // 思考参数：仅当模型被判定为支持思考时才附加；开启思考时同时带上强度档位。
-    if (thinkingProfile.mode !== 'unsupported') {
-      const fragment = thinkingActive ? thinkingProfile.on : thinkingProfile.off;
-      if (fragment) Object.assign(payload, fragment);
-      if (
-        thinkingActive &&
-        thinkingProfile.effortField &&
-        thinkingProfile.efforts.length > 0 &&
-        thinkingProfile.efforts.includes(thinkingEffort)
-      ) {
+  const requestOnce = async (over: { maxTokens?: number; nudge?: string; repair?: ChatMessage[] } = {}) => {
+    const input = over.repair ?? (over.nudge ? withNudge(effectiveMessages, over.nudge) : effectiveMessages);
+    const maxTokens = over.maxTokens ?? baseMaxTokens;
+    const wantsThinking = thinkingProfile.mode === 'always-on' || (!over.repair && thinkingActive);
+    const effort = wantsThinking ? thinkingEffort : thinkingProfile.off?.reasoning_effort;
+    const isOpenAI = target.officialOpenAI || config.provider === 'openai';
+    const openAIReasoning = isOpenAI && /^(?:gpt-[56]|o[1-9])(?:[.\-]|$)/i.test(target.model);
+    const payload: Record<string, unknown> = { model: target.model };
+    if (target.protocol === 'responses') {
+      payload.input = input;
+      payload.max_output_tokens = maxTokens;
+      if (target.officialOpenAI) payload.store = false;
+      if (jsonMode) payload.text = { format: { type: 'json_object' } };
+      if (typeof effort === 'string') payload.reasoning = { effort };
+    } else {
+      payload.messages = input;
+      payload[openAIReasoning ? 'max_completion_tokens' : 'max_tokens'] = maxTokens;
+      if (!openAIReasoning) payload.temperature = over.repair ? 0 : temperature;
+      if (jsonMode) payload.response_format = { type: 'json_object' };
+      Object.assign(payload, wantsThinking ? thinkingProfile.on : thinkingProfile.off);
+      if (wantsThinking && thinkingProfile.effortField && thinkingEffort) {
         payload[thinkingProfile.effortField] = thinkingEffort;
       }
     }
 
-    let response = await requestModel(url, payload, apiKey, timeoutMs);
-    let bodyText = await response.text();
-    if (!response.ok && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
-      const retryPayload = { ...payload };
-      delete retryPayload.response_format;
-      response = await requestModel(url, retryPayload, apiKey, timeoutMs);
-      bodyText = await response.text();
+    let response = await requestModel(target.url, payload, apiKey, timeoutMs);
+    if (!response.ok && jsonMode && [400, 422].includes(response.status) && /response[_ -]?format|json_object|text\.format/i.test(response.text)) {
+      delete payload[target.protocol === 'responses' ? 'text' : 'response_format'];
+      response = await requestModel(target.url, payload, apiKey, timeoutMs);
     }
-    if (!response.ok) {
-      throw new AIError(
-        'AI_HTTP',
-        `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}${modelNameHint(response.status, bodyText)}`,
-        { status: response.status },
-      );
-    }
+    if (!response.ok) throw modelHttpError(response, apiKey);
 
     let result: any;
     try {
-      result = JSON.parse(bodyText);
+      result = JSON.parse(response.text);
     } catch {
       throw new AIError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应');
     }
+    if (!result || typeof result !== 'object') throw new AIError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应');
     recordUsage(result.usage);
-    const choice = result?.choices?.[0];
-    let content = String(choice?.message?.content || '').trim();
-    // 兜底：若端点仍以思考模式返回（content 为空但 reasoning_content 有内容），取 reasoning_content
-    if (!content) {
-      const reasoning = String(choice?.message?.reasoning_content || '').trim();
-      if (reasoning) content = reasoning;
+    if (target.protocol === 'responses') {
+      if (result.status === 'failed' || result.status === 'cancelled') {
+        throw new AIError('AI_INVALID_RESPONSE', '模型服务未能完成生成，请重新测试连接');
+      }
+      if (!Array.isArray(result.output)) throw new AIError('AI_INVALID_RESPONSE', '接口未返回 Responses 格式的数据');
+      const parts: unknown[] = result.output.flatMap((item: { type?: string; content?: unknown[] }) =>
+        item?.type === 'message' && Array.isArray(item.content) ? item.content : [],
+      );
+      const incomplete = result.incomplete_details?.reason;
+      if (incomplete === 'content_filter') {
+        throw new AIError('AI_REFUSED', '模型拒绝生成该内容');
+      }
+      const textParts: string[] = [];
+      for (const part of parts) {
+        if (!part || typeof part !== 'object' || !('type' in part)) continue;
+        if (part.type === 'refusal') throw new AIError('AI_REFUSED', '模型拒绝生成该内容');
+        if (part.type === 'output_text' && 'text' in part && typeof part.text === 'string') textParts.push(part.text);
+      }
+      return { content: textParts.join('\n').trim(), finishReason: incomplete === 'max_output_tokens' ? 'length' : '' };
     }
-    return { content, finishReason: String(choice?.finish_reason || ''), payload };
+    const choice = result?.choices?.[0];
+    if (!choice) throw new AIError('AI_INVALID_RESPONSE', '接口未返回 Chat Completions 格式的数据');
+    if (choice.message?.refusal || choice.finish_reason === 'content_filter') throw new AIError('AI_REFUSED', '模型拒绝生成该内容');
+    return { content: String(choice.message?.content || '').trim(), finishReason: String(choice.finish_reason || '') };
   };
 
   // ---- 第 1 次调用 ----
   const attempt = await requestOnce();
   let content = attempt.content;
   let finishReason = attempt.finishReason;
-  let payload = attempt.payload;
 
   // 官方已知失败模式③④：截断（finish_reason=length）与空 content。各做一次有界纠偏重试。
   for (let retry = 0; retry < JSON_MODE_MAX_RETRY && (!content || finishReason === 'length'); retry++) {
@@ -587,7 +584,6 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
       if (second.content) {
         content = second.content;
         finishReason = second.finishReason;
-        payload = second.payload;
       }
     } catch (error) {
       // 重试本身失败：首次已有内容则沿用首次结果，否则抛出（保留 AI_EMPTY 语义供上层判断可重试性）
@@ -632,13 +628,22 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   const truncatedFinal = truncatedByFinish || tailCut;
   if (tailCut) parsed = undefined; // 半截对象不作数：交二次补齐，禁止当成功返回
   if (parsed === undefined) {
-    const viaModel = await repairJsonViaModel(url, content, payload, apiKey, timeoutMs, {
-      maxTokens: truncatedFinal ? Math.min(baseMaxTokens * 2, MODEL_MAX_OUTPUT_TOKENS) : baseMaxTokens,
-      systemPrompt: effectiveMessages
-        .filter((m) => m.role === 'system')
-        .map((m) => m.content)
-        .join('\n\n'),
-    });
+    let viaModel;
+    if (content.length >= 12 && /[[{]/.test(content)) {
+      const schema = effectiveMessages.filter((m) => m.role === 'system').map((m) => m.content);
+      try {
+        const repair = await requestOnce({
+          repair: [
+            { role: 'system', content: [...schema, REPAIR_JSON_SYSTEM].join('\n\n') },
+            { role: 'user', content: content.slice(0, 8000) },
+          ],
+          maxTokens: truncatedFinal ? Math.min(baseMaxTokens * 2, MODEL_MAX_OUTPUT_TOKENS) : baseMaxTokens,
+        });
+        if (repair.content && repair.finishReason !== 'length') viaModel = extractJson(repair.content);
+      } catch {
+        // The caller receives the original output failure if the repair also failed.
+      }
+    }
     if (viaModel === null || viaModel === undefined) {
       if (truncatedFinal) {
         throw new AIError('AI_TRUNCATED', 'AI 输出被截断', { finishReason, partial: content });
@@ -667,6 +672,70 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
     }
   }
   return parsed;
+}
+
+export async function testModelConnection(config: AppConfig['model']) {
+  const start = Date.now();
+  const target = resolveModelTarget(config);
+  const request = target ? { model: target.model, endpoint: target.endpoint, protocol: target.protocol } : null;
+  try {
+    if (!config.apiKey?.trim() || !target?.model) throw new AIError('AI_CONFIG', '请填写有效的接入地址、模型 ID 和 API Key');
+    const output = await callModel(
+      [{ role: 'user', content: '这是连通性测试。仅返回 JSON 对象 {"ok":true}。' }],
+      config,
+      { jsonMode: true, timeoutMs: 25_000 },
+    );
+    if (output?.ok !== true) throw new AIError('AI_INVALID_RESPONSE', '模型已响应，但未返回预期的测试 JSON');
+    return { ok: true, message: '模型已返回有效 JSON', request, durationMs: Date.now() - start };
+  } catch (error) {
+    return {
+      ok: false, request, durationMs: Date.now() - start,
+      code: error instanceof AIError ? error.code : 'AI_UNKNOWN',
+      message: error instanceof Error ? error.message : '模型测试失败',
+      details: error instanceof AIError ? error.details : undefined,
+    };
+  }
+}
+
+type ModelCatalog = { ok: true; ids: string[]; complete: boolean } | { ok: false; message: string };
+
+export async function fetchModelCatalog(config: AppConfig['model']): Promise<ModelCatalog> {
+  const apiKey = config.apiKey?.trim();
+  const catalog = resolveModelCatalog(config);
+  if (!catalog || !apiKey) return { ok: false, message: '请填写支持目录查询的接入地址和 API Key' };
+
+  const ids = new Set<string>();
+  const { url, qwenWorkspace, officialOpenAI } = catalog;
+  let complete = false;
+  let scanned = 0;
+  try {
+    for (let page = 1; page <= 5; page++) {
+      if (qwenWorkspace) url.searchParams.set('page_no', String(page));
+      const response = await requestModel(url.href, null, apiKey, 12_000);
+      if (!response.ok) {
+        if (response.status === 404) return { ok: false, message: '当前地址未提供模型目录（HTTP 404），可选用官方预设或填写模型 ID。' };
+        throw modelHttpError(response, apiKey);
+      }
+
+      const body = JSON.parse(response.text);
+      const entries: unknown = qwenWorkspace ? body?.output?.models : body?.data;
+      if (!Array.isArray(entries)) return { ok: false, message: '接口未返回可读取的模型目录。' };
+      const idField = qwenWorkspace ? 'model' : 'id';
+      for (const item of entries) {
+        if (!item || typeof item[idField] !== 'string') continue;
+        const id = item[idField].trim();
+        if (!id) continue;
+        if (officialOpenAI && /^(?:tts-|whisper-|dall-e-|gpt-image-|chatgpt-image-|text-embedding-|omni-moderation|sora-)|-(?:audio|realtime|transcribe|tts)(?:-|$)/i.test(id)) continue;
+        ids.add(id);
+      }
+      scanned += entries.length;
+      complete = !qwenWorkspace || entries.length === 0 || scanned >= Number(body.output?.total ?? scanned);
+      if (complete) break;
+    }
+    return { ok: true, ids: Array.from(ids).sort((a, b) => a.localeCompare(b)), complete };
+  } catch (error) {
+    return { ok: false, message: error instanceof AIError ? error.message : '无法读取服务商返回的模型目录。' };
+  }
 }
 
 /**

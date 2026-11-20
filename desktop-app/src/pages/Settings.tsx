@@ -12,7 +12,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Alert,
-  AutoComplete,
   Button,
   Checkbox,
   Input,
@@ -68,7 +67,8 @@ import {
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
 import type { SettingsTabKey } from '@/store/useAppStore';
-import { callModel, clearAICache, getAICacheStats, getLLMUsageStats, resetLLMUsageStats } from '@/lib/bossclaw/llm';
+import { fetchModelCatalog, testModelConnection, clearAICache, getAICacheStats, getLLMUsageStats, resetLLMUsageStats } from '@/lib/bossclaw/llm';
+import { resolveModelCatalog, resolveModelTarget } from '@/lib/bossclaw/providerPresets';
 import {
   allSkillsWithState,
   setSkillEnabled,
@@ -184,7 +184,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   useEffect(() => {
     visibleRef.current = isVisible;
   }, [isVisible]);
-  const { config, setConfig, setModel, applyProviderDefaults, isLLMConfigured } = useSettingsStore();
+  const { config, setConfig, setModel, applyProviderDefaults, selectProvider, isLLMConfigured } = useSettingsStore();
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const setRoute = useAppStore((s) => s.setRoute);
@@ -194,7 +194,10 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const requestBrowserLogin = useAppStore((s) => s.requestBrowserLogin);
 
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [testResult, setTestResult] = useState<Awaited<ReturnType<typeof testModelConnection>> | null>(null);
+  const [catalog, setCatalog] = useState<Awaited<ReturnType<typeof fetchModelCatalog>> | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [modelQuery, setModelQuery] = useState('');
   const [aiCacheStats, setAiCacheStats] = useState<ReturnType<typeof getAICacheStats> | null>(null);
   const [llmUsage, setLlmUsage] = useState<ReturnType<typeof getLLMUsageStats> | null>(null);
   // AI 技能（skills 层）启用状态：初始用内置定义，加载 SKILL.md 后刷新
@@ -571,17 +574,27 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     }
     setTesting(true);
     setTestResult(null);
+    const testedModel = config.model;
     try {
-      const r = await callModel([{ role: 'user', content: 'ping' }], config.model, { jsonMode: false, maxTokens: 128, temperature: 0 });
-      const msg = typeof r === 'string' ? r.slice(0, 60) : JSON.stringify(r).slice(0, 60);
-      setTestResult({ ok: true, msg });
-      message.success('LLM 连接成功！');
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setTestResult({ ok: false, msg });
-      message.error('连接失败：' + msg);
+      const result = await testModelConnection(testedModel);
+      if (useSettingsStore.getState().config.model === testedModel) setTestResult(result);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const loadModelCatalog = async () => {
+    if (catalogLoading) return;
+    const tested = config.model;
+    setCatalogLoading(true);
+    try {
+      const result = await fetchModelCatalog(tested);
+      const current = useSettingsStore.getState().config.model;
+      if (current.provider === tested.provider && current.baseUrl === tested.baseUrl && current.apiKey === tested.apiKey) {
+        setCatalog(result);
+      }
+    } finally {
+      setCatalogLoading(false);
     }
   };
 
@@ -744,14 +757,32 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   };
 
   const llmReady = isLLMConfigured();
+  const llmPreset = PROVIDER_DEFAULTS[config.model.provider] ?? PROVIDER_DEFAULTS.custom;
+  const llmTarget = resolveModelTarget(config.model);
+  const catalogAvailable = !!resolveModelCatalog(config.model);
+  const canFetchCatalog = catalogAvailable && !!config.model.apiKey?.trim();
+  const liveModels = catalog?.ok ? catalog.ids : [];
+  const presetModels = llmPreset.models.filter((id) => !liveModels.includes(id));
+  const typedModel = modelQuery.trim();
+  const modelOptions = [
+    { label: '接口返回', options: liveModels.map((id) => ({ value: id, label: id })) },
+    { label: '官方预设', options: presetModels.map((id) => ({ value: id, label: id })) },
+    {
+      label: '手动填写',
+      options: typedModel && !liveModels.includes(typedModel) && !presetModels.includes(typedModel)
+        ? [{ value: typedModel, label: `使用「${typedModel}」` }]
+        : [],
+    },
+  ].filter((group) => group.options.length > 0);
+  const openAIModel = config.model.provider === 'openai' || llmTarget?.officialOpenAI === true;
 
   // ===== 思考强度（唯一判据见 lib/bossclaw/thinkingCapability.ts）=====
   // 能力只由「服务商 + 模型名」决定：未验证支持的模型恒为关闭，且请求侧也不会发任何思考参数
   // —— 即使 localStorage 里残留 enabled:true，UI 与实际请求都按关闭处理（开关不可用）。
   const thinkingProfile = resolveThinkingProfile(
     config.model.provider,
-    config.model.model,
-    config.model.baseUrl,
+    llmTarget?.model,
+    llmTarget?.url,
   );
   const thinkingSupported = thinkingProfile.mode !== 'unsupported';
   const thinkingOn = isThinkingActive(thinkingProfile, config.model.thinking);
@@ -1635,21 +1666,33 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 </div>
                 大模型服务商与 API 接入
               </div>
-              <Tag color={llmReady ? 'green' : 'orange'}>
-                {llmReady ? '配置完整' : '待完善配置'}
+              <Tag color={testResult?.ok ? 'green' : testResult ? 'red' : llmReady ? 'blue' : 'orange'}>
+                {testResult?.ok ? '已验证' : testResult ? '连接失败' : llmReady ? '待测试' : '待完善配置'}
               </Tag>
             </div>
 
             <div className="settings-grid">
               <div className="sg-item">
-                <span className="field-label">服务商预设</span>
+                <Space size={8} wrap>
+                  <span className="field-label">服务商预设</span>
+                  {config.model.provider !== 'custom' && (
+                    <Button size="small" onClick={() => { applyProviderDefaults(config.model.provider); setTestResult(null); setCatalog(null); }}>
+                      应用官方预设
+                    </Button>
+                  )}
+                  {llmPreset.docs && (
+                    <Button size="small" type="link" href={llmPreset.docs} target="_blank" rel="noreferrer">
+                      官方文档
+                    </Button>
+                  )}
+                </Space>
                 <Select
                   style={{ width: '100%' }}
                   value={config.model.provider as LLMProvider}
                   onChange={(p) => {
-                    applyProviderDefaults(p);
+                    selectProvider(p);
                     setTestResult(null);
-                    message.success(`已套用 ${PROVIDER_DEFAULTS[p].label} 默认端点（可继续修改）`);
+                    setCatalog(null);
                   }}
                   options={(Object.keys(PROVIDER_DEFAULTS) as LLMProvider[]).map((p) => ({
                     label: PROVIDER_DEFAULTS[p].label,
@@ -1658,28 +1701,54 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">Base URL</span>
+                <span className="field-label">接入地址</span>
                 <Input
                   value={config.model.baseUrl}
-                  onChange={(e) => { setModel({ baseUrl: e.target.value }); setTestResult(null); }}
-                  placeholder="https://api.deepseek.com"
+                  onChange={(e) => { setModel({ baseUrl: e.target.value }); setTestResult(null); setCatalog(null); }}
+                  placeholder={llmPreset.baseUrl || 'https://你的服务地址/v1'}
                 />
               </div>
               <div className="sg-item wide">
-                <span className="field-label">模型名称</span>
-                <AutoComplete
-                  style={{ width: '100%' }}
-                  value={config.model.model}
-                  onChange={(v) => { setModel({ model: v }); setTestResult(null); }}
-                  options={(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []).map((m) => ({
-                    value: m,
-                    label: m,
-                  }))}
-                  placeholder="选择或输入模型名"
-                  filterOption={(input, option) =>
-                    String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
-                  }
-                />
+                <span className="field-label">模型 ID</span>
+                <div className="llm-keyrow">
+                  <Select
+                    aria-label="模型 ID"
+                    showSearch
+                    style={{ width: '100%' }}
+                    value={config.model.model || undefined}
+                    optionLabelProp="value"
+                    optionFilterProp="value"
+                    searchValue={modelQuery}
+                    onSearch={setModelQuery}
+                    onDropdownVisibleChange={(open) => {
+                      if (!open) setModelQuery('');
+                      if (open && canFetchCatalog && !catalog) void loadModelCatalog();
+                    }}
+                    onChange={(model: string) => { setModel({ model }); setModelQuery(''); setTestResult(null); }}
+                    options={modelOptions}
+                    placeholder="选择或搜索模型 ID"
+                    notFoundContent={catalogLoading ? '正在读取模型目录…' : '输入完整模型 ID'}
+                    loading={catalogLoading}
+                  />
+                  <Button
+                    disabled={!canFetchCatalog}
+                    loading={catalogLoading}
+                    onClick={() => void loadModelCatalog()}
+                    className="btn-uniform"
+                  >
+                    {catalog?.ok ? '刷新目录' : '获取模型'}
+                  </Button>
+                </div>
+                {catalog && (
+                  <Typography.Text type={catalog.ok ? 'secondary' : 'warning'} aria-live="polite">
+                    {catalog.ok
+                      ? (catalog.ids.length > 0 ? `接口返回 ${catalog.ids.length} 个模型${catalog.complete ? '' : '（部分目录）'}` : '服务商返回了空目录')
+                      : catalog.message}
+                  </Typography.Text>
+                )}
+                {config.model.provider === 'qwen' && !catalogAvailable && (
+                  <Typography.Text type="secondary">百炼北京共享地址提供静态预设。查询模型目录请填写业务空间接入地址。</Typography.Text>
+                )}
               </div>
               {/* 思考强度：填在「模型名称」右侧的留白格里。能力判定完全由 thinkingCapability.ts 决定 ——
                   不支持思考的模型开关恒为关且不可点，请求侧也不会附加任何思考参数。
@@ -1720,83 +1789,20 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   </div>
                 </Tooltip>
               </div>
-              {/* 上下文长度：按所用模型的**实际窗口**填写（1M / 252K / 128K…）。
-                  它决定每次 AI 调用能投喂多少简历与 JD —— 填小了长简历只剩前半段被读到，
-                  填大了超过模型实际窗口会直接 400。字段级解释走 Tooltip（不常驻页面文案）。 */}
-              <div className="sg-item">
-                <span className="field-label">上下文长度</span>
-                <Tooltip
-                  title={
-                    <span>
-                      按所用模型的**实际**上下文窗口填写（如 1M=1000K、252K、128K）。
-                      <br />
-                      它决定每次 AI 调用能投喂多少简历与岗位描述：填小了长简历只剩前半段进入模型，
-                      填大了超出模型实际窗口会请求失败。
-                      <br />
-                      <br />
-                      当前口径：{ctxBudget.note}
-                    </span>
-                  }
-                >
-                  <div className="llm-thinkingrow">
-                    <Select
-                      style={ctxCustomMode ? undefined : { width: '100%' }}
-                      popupMatchSelectWidth={false}
-                      value={ctxCustomMode ? 'custom' : ctxWindow}
-                      onChange={(v) => {
-                        if (v === 'custom') {
-                          setCtxCustom(true);
-                          return;
-                        }
-                        setCtxCustom(false);
-                        setContextWindowValue(Number(v));
-                      }}
-                      options={[
-                        ...CONTEXT_WINDOW_PRESETS.map((p) => ({ value: p.value, label: p.label })),
-                        { value: 'custom', label: '自定义…' },
-                      ]}
-                    />
-                    {ctxCustomMode ? (
-                      <InputNumber
-                        style={{ flex: 1, minWidth: 96 }}
-                        min={CONTEXT_WINDOW_MIN}
-                        max={CONTEXT_WINDOW_MAX}
-                        step={1000}
-                        value={ctxWindow}
-                        onChange={(v) => setContextWindowValue(Number(v) || DEFAULT_CONTEXT_WINDOW)}
-                        addonAfter="tokens"
-                      />
-                    ) : null}
-                  </div>
-                </Tooltip>
-              </div>
-              {/* 上下文用量：全满（吃满窗口） / 40%（省 token、提速）。
-                  预算的实际扣减口径（输出预留 + 安全边际）由 contextBudget.ts 统一决定，UI 不重复计算。 */}
-              <div className="sg-item">
-                <span className="field-label">上下文用量</span>
-                <Tooltip
-                  title={
-                    <span>
-                      决定每次 AI 调用用掉窗口的多少：<b>全满</b>按窗口上限投喂（信息最全、token 最多）；
-                      <b>40%</b>只投喂四成（更省 token、响应更快，长简历可能只进入前半段）。
-                      <br />
-                      <br />
-                      当前可投喂上下文约 {formatTokenCount(ctxBudget.inputBudgetTokens)} tokens
-                      （≈同量汉字）；已扣除输出预留 {formatTokenCount(ctxBudget.outputReserveTokens)} 与安全边际。
-                    </span>
-                  }
-                >
-                  <Segmented
-                    block
-                    value={ctxUsage}
-                    onChange={(v) => setContextUsage(v as ContextUsage)}
-                    options={[
-                      { value: 'full', label: CONTEXT_USAGE_LABELS.full },
-                      { value: 'compact', label: CONTEXT_USAGE_LABELS.compact },
-                    ]}
-                  />
-                </Tooltip>
-              </div>
+              {openAIModel && (
+                <div className="sg-item">
+                  <span className="field-label">模型上下文长度</span>
+                  <Input aria-label="模型上下文长度" disabled value="由所选模型决定" />
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <Space size={8} wrap>
+                <Tag>{llmTarget?.protocol === 'responses' ? 'Responses API' : llmTarget ? 'Chat Completions' : '待设置接口'}</Tag>
+                {llmTarget && <Typography.Text code style={{ overflowWrap: 'anywhere' }}>{llmTarget.endpoint}</Typography.Text>}
+              </Space>
+              {llmPreset.hint && <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>{llmPreset.hint}</Paragraph>}
             </div>
 
             <div className="sg-item" style={{ marginTop: 16 }}>
@@ -1804,8 +1810,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="llm-keyrow">
                 <Input.Password
                   value={config.model.apiKey}
-                  onChange={(e) => { setModel({ apiKey: e.target.value }); setTestResult(null); }}
-                  placeholder="sk-..."
+                  onChange={(e) => { setModel({ apiKey: e.target.value }); setTestResult(null); setCatalog(null); }}
+                  placeholder={`输入 ${llmPreset.label} 的 API Key`}
                 />
                 <Button
                   type="primary"
@@ -1825,13 +1831,95 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 type={testResult.ok ? 'success' : 'error'}
                 showIcon
                 message={testResult.ok ? 'LLM 接口连接成功' : 'LLM 接口连接失败'}
-                description={testResult.msg}
+                description={
+                  <div style={{ whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>
+                    <div>{testResult.request?.model} · {(testResult.durationMs / 1000).toFixed(1)} 秒</div>
+                    <div>{testResult.message}</div>
+                  </div>
+                }
               />
             )}
 
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
-              🔒 API Key 保存在本机 localStorage（<strong>明文存储，应用未做额外加密</strong>），仅用于直连你在上方配置的模型服务商，绝不会上传至第三方服务器；请避免在共用设备上使用。未配置时职业画像与岗位匹配将自动回退到本地规则初稿。
+              API Key 明文保存在此设备上。连接测试只向所选服务发送一条固定的 JSON 测试提示词。
             </Paragraph>
+            <details style={{ marginTop: 16 }}>
+              <summary>本地资料裁剪</summary>
+              <Paragraph type="secondary" style={{ margin: '8px 0' }}>
+                此处只设置 BossDot 选取简历和岗位描述的预算。接口请求携带裁剪后的文本。
+              </Paragraph>
+              <div className="settings-grid">
+                {!openAIModel && <div className="sg-item">
+                  <span className="field-label">本地预算上限</span>
+                  <Tooltip
+                    title={
+                      <span>
+                        BossDot 根据该预算裁剪简历和岗位描述。
+                        <br />
+                        <br />
+                        当前口径：{ctxBudget.note}
+                      </span>
+                    }
+                  >
+                    <div className="llm-thinkingrow">
+                      <Select
+                        style={ctxCustomMode ? undefined : { width: '100%' }}
+                        popupMatchSelectWidth={false}
+                        value={ctxCustomMode ? 'custom' : ctxWindow}
+                        onChange={(v) => {
+                          if (v === 'custom') {
+                            setCtxCustom(true);
+                            return;
+                          }
+                          setCtxCustom(false);
+                          setContextWindowValue(Number(v));
+                        }}
+                        options={[
+                          ...CONTEXT_WINDOW_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+                          { value: 'custom', label: '自定义…' },
+                        ]}
+                      />
+                      {ctxCustomMode ? (
+                        <InputNumber
+                          style={{ flex: 1, minWidth: 96 }}
+                          min={CONTEXT_WINDOW_MIN}
+                          max={CONTEXT_WINDOW_MAX}
+                          step={1000}
+                          value={ctxWindow}
+                          onChange={(v) => setContextWindowValue(Number(v) || DEFAULT_CONTEXT_WINDOW)}
+                          addonAfter="tokens"
+                        />
+                      ) : null}
+                    </div>
+                  </Tooltip>
+                </div>}
+                <div className="sg-item">
+                  <span className="field-label">本地输入用量</span>
+                  <Tooltip
+                    title={
+                      <span>
+                        决定每次 AI 调用用掉窗口的多少：<b>全满</b>按窗口上限投喂（信息最全、token 最多）；
+                        <b>40%</b>只投喂四成（更省 token、响应更快，长简历可能只进入前半段）。
+                        <br />
+                        <br />
+                        当前可投喂上下文约 {formatTokenCount(ctxBudget.inputBudgetTokens)} tokens
+                        （≈同量汉字）；已扣除输出预留 {formatTokenCount(ctxBudget.outputReserveTokens)} 与安全边际。
+                      </span>
+                    }
+                  >
+                    <Segmented
+                      block
+                      value={ctxUsage}
+                      onChange={(v) => setContextUsage(v as ContextUsage)}
+                      options={[
+                        { value: 'full', label: CONTEXT_USAGE_LABELS.full },
+                        { value: 'compact', label: CONTEXT_USAGE_LABELS.compact },
+                      ]}
+                    />
+                  </Tooltip>
+                </div>
+              </div>
+            </details>
           </div>
 
           <div className="settings-section-card">

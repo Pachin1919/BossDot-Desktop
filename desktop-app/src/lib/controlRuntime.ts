@@ -21,6 +21,7 @@ import { SAFETY_LIMITS, isLockedOut, effectiveDailyCap, enabledSentCount, cooldo
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { tailorForJob } from '@/lib/bossclaw/jobAssistant';
 import { buildProfile } from '@/lib/bossclaw/profile';
+import { fetchModelCatalog, testModelConnection } from '@/lib/bossclaw/llm';
 import { mergeTargetLocationsWith, syncTargetLocationsOnStart } from '@/lib/bossclaw/targetLocationSync';
 import { buildDirectionPlan } from '@/lib/bossclaw/directions';
 import { createTasks } from '@/lib/bossclaw/tasks';
@@ -37,6 +38,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { TASK_STAGE_META, TERMINAL_RUN_STATUSES, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { isDeliveryClaimed } from '@/lib/bossclaw/deliveryLock';
 import { getBrowser } from '@/lib/browserRegistry';
+import { CITY_CODES } from '@/lib/bossclaw/searchUrl';
 import {
   queryInteractive,
   snapshotInteractive,
@@ -405,19 +407,41 @@ const handlers: Record<string, Handler> = {
     return { applied: true, message: `定时任务 ${sid} 已${enabled ? '启用' : '停用'}` };
   },
 
-  // ---- AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时该链路回退本地规则，不转交 agent；长耗时）----
-  aiAnalyzeJob: async ({ job, resumeText, customGreetingPrompt }) => {
-    if (!job || typeof job !== 'object') return { applied: false, message: '缺少岗位对象 job（含 title/company/salary/location/description 等字段）' };
+  // ---- AI 按需生成（复用工作台提示词、技能与 Agent 代答链路）----
+  modelTestConnection: async () => {
+    const result = await testModelConnection(useSettingsStore.getState().config.model);
+    return { applied: result.ok, message: result.message, next: result };
+  },
+  modelList: async () => {
+    const result = await fetchModelCatalog(useSettingsStore.getState().config.model);
+    return { applied: result.ok, message: result.ok ? `已获取 ${result.ids.length} 个模型 ID` : result.message, next: result };
+  },
+  aiAnalyzeJob: async ({ job, pendingId, resumeText, customGreetingPrompt }) => {
     const cfg = useSettingsStore.getState().config;
     const data = useDataStore.getState();
+    const id = typeof pendingId === 'string' ? pendingId.trim() : '';
+    const item = id ? data.pending.find((entry) => entry.id === id) : undefined;
+    if (id && !item) return { applied: false, message: '待分析岗位已不在队列中' };
+    const target = item?.job ?? job;
+    if (!target || typeof target !== 'object') return { applied: false, message: '需要岗位对象 job 或队列岗位 pendingId' };
+    const logs = useRuntimeLogsStore.getState();
+    if (item) logs.addLog('info', `开始分析：${item.job.title || '队列岗位'}`);
     const out = await analyzeJob(
-      job as JobMeta,
+      target as JobMeta,
       data.profile,
       resumeText !== undefined ? String(resumeText) : data.resumeText,
       cfg,
       cfg.model,
       customGreetingPrompt !== undefined ? String(customGreetingPrompt) : undefined
     );
+    if (item) {
+      const current = useDataStore.getState().pending.find((entry) => entry.id === id);
+      if (current) data.updatePending(id, {
+        analysis: out,
+        deliveryGreeting: current.deliveryGreeting || (current.status === 'pending' ? out.greeting : ''),
+      });
+      logs.addLog('info', `岗位分析完成：${item.job.title || '队列岗位'} · ${out.scoreSource === 'local' ? '本地规则' : 'AI'}`);
+    }
     return { applied: true, message: 'AI 岗位分析完成（含决策/分数/打招呼语）', next: out };
   },
   aiTailorResume: async ({ job, greetingInstructions }) => {
@@ -466,12 +490,57 @@ const handlers: Record<string, Handler> = {
   },
 
   // ---- 浏览器只读探索（经 browserRegistry；cloak 引擎不可用或返回明确说明）----
-  browserSearch: async ({ query, city, page, pageSize }) => {
+  browserSearch: async ({ query, city, page, pageSize, recordTask }) => {
     const b = getBrowser();
     if (!b) return { applied: false, message: '浏览器控制不可用（需 webview 引擎运行）' };
-    const out = await b.joblist(String(query ?? ''), city !== undefined ? String(city) : undefined, page ? Number(page) : undefined, pageSize ? Number(pageSize) : undefined);
-    const err = (out as { error?: string })?.error;
-    return { applied: !err, message: err ? `岗位列表获取失败：${err}` : '岗位列表（BOSS 官方 API，只读）', next: out };
+    const keyword = String(query ?? '').trim();
+    const region = city === undefined ? undefined : String(city).trim();
+    const cityCode = region ? CITY_CODES[region] ?? region : undefined;
+    const pageNumber = page ? Number(page) : undefined;
+    const location = cityCode ? Object.keys(CITY_CODES).find((name) => CITY_CODES[name] === cityCode) ?? cityCode : '全国';
+    const taskId = recordTask === true ? `cr_mcp_boss_${cityCode ?? 'all'}_${keyword}_${pageNumber ?? 1}` : '';
+    const data = useDataStore.getState();
+    if (taskId) {
+      const now = Date.now();
+      data.upsertTaskRun({
+        id: taskId,
+        keyword,
+        location,
+        status: 'running',
+        stage: 'discovered',
+        stageLabel: '正在搜索岗位',
+        progress: 10,
+        processed: 0,
+        discovered: 0,
+        analyzed: 0,
+        failed: 0,
+        error: '',
+        completedAt: null,
+        createdAt: data.taskRuns.find((run) => run.id === taskId)?.createdAt ?? now,
+        updatedAt: now,
+      });
+    }
+    const out = await b.joblist(keyword, cityCode, pageNumber, pageSize ? Number(pageSize) : undefined);
+    const result = out as { error?: string; code?: number; data?: { message?: string; zpData?: { jobList?: unknown[] } }; riskCodeMessage?: string };
+    const error = result.error || (result.code && (result.data?.message || result.riskCodeMessage || `平台返回 ${result.code}`)) || '';
+    const count = result.data?.zpData?.jobList?.length ?? 0;
+    if (taskId) {
+      const now = Date.now();
+      data.updateTaskRun(taskId, {
+        status: error ? 'failed' : 'success',
+        stage: error ? 'failed' : 'success',
+        stageLabel: error || `已返回 ${count} 条岗位`,
+        progress: 100,
+        processed: count,
+        discovered: count,
+        error,
+        failed: error ? 1 : 0,
+        completedAt: now,
+        updatedAt: now,
+      });
+      useRuntimeLogsStore.getState().addLog(error ? 'warn' : 'info', `岗位搜索 · ${location} · ${keyword || '全部'}：${error || `返回 ${count} 条`}`);
+    }
+    return { applied: !error, message: error ? `岗位列表获取失败：${error}` : '岗位列表（BOSS 官方 API，只读）', next: out, ...(taskId ? { taskId } : {}) };
   },
   browserOpenJob: ({ url, tabId }) => {
     const b = getBrowser();

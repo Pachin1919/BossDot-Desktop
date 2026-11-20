@@ -153,19 +153,23 @@ export const electronApi = {
     url: string,
     payload: unknown,
     apiKey: string,
-    timeoutMs?: number
-  ): Promise<{ ok: boolean; status: number; text: string; error?: string }> => {
+    timeoutMs?: number,
+    method?: 'GET' | 'POST',
+  ): Promise<{ ok: boolean; status: number; text: string; error?: string; requestId?: string }> => {
     try {
       const fn = (api() as Record<string, unknown>).llmProxy as
-        | ((u: string, p: unknown, k: string, t?: number) => Promise<unknown>)
+        | ((u: string, p: unknown, k: string, t?: number, m?: 'GET' | 'POST') => Promise<unknown>)
         | undefined;
       if (!fn) return { ok: false, status: 0, text: '', error: 'llmProxy 不可用' };
-      const r = (await fn(url, payload, apiKey, timeoutMs)) as { ok?: boolean; status?: number; text?: string; error?: string };
+      const r = (await fn(url, payload, apiKey, timeoutMs, method)) as {
+        ok?: boolean; status?: number; text?: string; error?: string; requestId?: string;
+      };
       return {
         ok: Boolean(r?.ok),
         status: Number(r?.status || 0),
         text: String(r?.text || ''),
         error: r?.error || undefined,
+        requestId: r?.requestId || undefined,
       };
     } catch (e) {
       return { ok: false, status: 0, text: '', error: (e as Error).message };

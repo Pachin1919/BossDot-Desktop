@@ -1,80 +1,131 @@
-// 模型提供商的预设配置（P1-10：模型名单一来源）
-// ---------------------------------------------------------
-// 背景：模型名是本项目最容易「配错就整个 AI 链路 400」的开关——曾需在
-// useSettingsStore(PROVIDER_DEFAULTS) / defaults.ts(DEFAULT_CONFIG.model) / llm.ts(兜底)
-// 三处同步，改一处漏一处即 400。现收敛为本无依赖模块（只 import types）的唯一来源：
-//   - useSettingsStore / Settings 页：PROVIDER_DEFAULTS（下拉/套用默认）
-//   - defaults.ts：DEFAULT_CONFIG.model 引用 deepseek 预设
-//   - llm.ts：callModel 兜底模型名引用 DEFAULT_MODEL_NAME
-// 换模型名只改本文件；退役名迁移仍须同步 settingsMigrations.ts 的 RETIRED_DEEPSEEK_MODEL_MAP。
-//
-// 模型口径以 2026-09-16 联网核对官方文档为准，已移除停用/下线模型：
-//   OpenAI：gpt-6-astra（09-03 发布，最新旗舰）+ gpt-5.6 Sol/Terra/Luna + gpt-5.5-pro；
-//   DeepSeek（api-docs.deepseek.com/quick_start/pricing）：**只有 `deepseek-flash`（= DeepSeek-V4.1-Flash）
-//     与 `deepseek-v4-pro`（= V4-Pro-0813）两个名字**；`deepseek-v4-flash` / `deepseek-v4-flash-0731`
-//     为已退役别名（官方仍接收但已由 V4.1-Flash 承接），第三方网关会直接 400 拒绝，故一律不再推荐；
-//   glm-4.x/5.0 → glm-5.3 / glm-5.3-flash / glm-5.2 / glm-5.1 / glm-5；Qwen3.5/3.6 → Qwen3.8；
-//   doubao 2.0 → doubao-seed-2.1（保留 2.0-lite 作为低成本档）。
-import type { ModelProvider } from './types';
+import type { AppConfig, ModelProvider } from './types';
 
 export type LLMProvider = ModelProvider;
+type ModelProtocol = 'responses' | 'chat';
 
 export interface ProviderPreset {
   baseUrl: string;
   model: string;
-  /** 可选模型名建议（下拉选择用），用户仍可在输入框自主填入任意模型名 */
   models: string[];
   label: string;
+  protocol: ModelProtocol;
+  docs?: string;
+  hint?: string;
 }
 
 export const PROVIDER_DEFAULTS: Record<LLMProvider, ProviderPreset> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-5.6-luna',
-    models: ['gpt-6-astra', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.5-pro', 'gpt-5.5'],
+    model: 'gpt-6-luna',
+    models: ['gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6.2-astra'],
     label: 'OpenAI',
+    protocol: 'responses',
+    docs: 'https://developers.openai.com/api/docs/models',
   },
   deepseek: {
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-flash',
     models: ['deepseek-flash', 'deepseek-v4-pro'],
     label: 'DeepSeek',
+    protocol: 'chat',
+    docs: 'https://api-docs.deepseek.com/',
   },
   qwen: {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen3.8-max',
-    models: ['qwen3.8-max', 'qwen3.7-max', 'qwen3.7-plus', 'qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-flash'],
-    label: '通义千问',
+    model: 'qwen3.8-flash',
+    models: ['qwen3.8-flash', 'qwen3.7-plus', 'qwen3.8-max', 'qwen4-max', 'qwen-plus', 'qwen-flash'],
+    label: '阿里云百炼（千问）',
+    protocol: 'chat',
+    docs: 'https://help.aliyun.com/zh/model-studio/base-url',
+    hint: '预设为北京按量付费地址。使用其他地域、业务空间或 Token Plan 时，填写控制台中与密钥配套的地址。',
   },
   zhipu: {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-5.3',
-    models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5'],
+    models: ['glm-5.3', 'glm-5.2', 'glm-5.1', 'glm-5'],
     label: '智谱 GLM',
+    protocol: 'chat',
+    docs: 'https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3',
   },
   siliconflow: {
     baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'Qwen/Qwen3.8-2.4T-A95B',
-    // 硅基流动的 model 参数用「组织/模型」全名（以模型广场复制到的字符串为准）。
-    // DeepSeek-V4-Pro / DeepSeek-V4-Pro-0813 为 2026-08-13 上架版本（官方博客口径）。
-    models: [
-      'Qwen/Qwen3.8-2.4T-A95B',
-      'Qwen/Qwen3.6-27B',
-      'deepseek-ai/DeepSeek-V4-Pro',
-      'deepseek-ai/DeepSeek-V4-Pro-0813',
-      'deepseek-ai/DeepSeek-V4-Flash-0731',
-    ],
+    model: 'deepseek-ai/DeepSeek-V4-Flash',
+    models: ['deepseek-ai/DeepSeek-V4-Flash', 'Pro/zai-org/GLM-5.1'],
     label: '硅基流动',
+    protocol: 'chat',
+    docs: 'https://docs.siliconflow.cn/docs/api/chat-completions-post',
+    hint: '模型 ID 使用平台模型广场上的完整名称，保留组织前缀。',
   },
   volces: {
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    model: 'doubao-seed-2.1-pro',
-    models: ['doubao-seed-2.1-pro', 'doubao-seed-2.1-turbo', 'doubao-seed-evolving', 'doubao-seed-2.0-lite'],
+    model: 'doubao-seed-2-1-lite-260915',
+    models: ['doubao-seed-2-1-lite-260915', 'doubao-seed-2-1-pro-260915', 'doubao-seed-2-1-turbo-260628', 'doubao-seed-evolving'],
     label: '火山方舟',
+    protocol: 'chat',
+    docs: 'https://docs.volcengine.com/docs/ark/model-list?lang=zh',
+    hint: '填写当前账号已开通的模型 ID 或推理接入点 ID（ep-…）。此预设使用按量付费地址。',
   },
-  custom: { baseUrl: '', model: '', models: [], label: '自定义（OpenAI 兼容）' },
+  custom: {
+    baseUrl: '',
+    model: '',
+    models: [],
+    label: '自定义兼容接口',
+    protocol: 'chat',
+    hint: '可填写 Base URL 或完整接口地址。Responses 网关请填写以 /responses 结尾的地址。',
+  },
 };
 
-/** 默认提供商与默认模型（defaults.ts 的 DEFAULT_CONFIG.model 与 llm.ts 兜底共用，P1-10） */
 export const DEFAULT_PROVIDER: LLMProvider = 'deepseek';
-export const DEFAULT_MODEL_NAME: string = PROVIDER_DEFAULTS[DEFAULT_PROVIDER].model;
+export const DEFAULT_MODEL_NAME = PROVIDER_DEFAULTS[DEFAULT_PROVIDER].model;
+
+export function resolveModelTarget(config: Pick<AppConfig['model'], 'provider' | 'baseUrl' | 'model'>) {
+  const preset = PROVIDER_DEFAULTS[config.provider] ?? PROVIDER_DEFAULTS.custom;
+  const model = config.model?.trim() || preset.model;
+  const address = config.baseUrl?.trim() || preset.baseUrl;
+  if (!address) return null;
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    return null;
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.username || url.password || url.hash || (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:'))) return null;
+
+  const officialOpenAI = url.origin === 'https://api.openai.com';
+  const path = url.pathname.replace(/\/+$/, '');
+  const protocol = path.endsWith('/responses')
+    ? 'responses'
+    : path.endsWith('/chat/completions')
+      ? 'chat'
+      : officialOpenAI
+        ? 'responses'
+        : config.provider === 'openai'
+          ? 'chat'
+          : preset.protocol;
+  if (path.endsWith('/responses') || path.endsWith('/chat/completions')) {
+    url.pathname = path;
+  } else {
+    const basePath = officialOpenAI && !path ? '/v1' : path;
+    url.pathname = `${basePath}/${protocol === 'responses' ? 'responses' : 'chat/completions'}`;
+  }
+  return { url: url.href, endpoint: url.origin + url.pathname, model, protocol, officialOpenAI };
+}
+
+export function resolveModelCatalog(config: AppConfig['model']) {
+  const target = resolveModelTarget(config);
+  if (!target) return null;
+  const url = new URL(target.url);
+  const qwenWorkspace = config.provider === 'qwen'
+    && (url.hostname.endsWith('.maas.aliyuncs.com') || url.hostname === 'dashscope-us.aliyuncs.com');
+  if (qwenWorkspace) {
+    url.pathname = '/api/v1/models';
+    url.searchParams.set('capabilities', 'TG');
+    url.searchParams.set('page_size', '100');
+  } else {
+    if (config.provider === 'qwen' && url.hostname.endsWith('.aliyuncs.com')) return null;
+    url.pathname = url.pathname.replace(/\/(?:responses|chat\/completions)$/, '/models');
+    if (config.provider === 'siliconflow' && url.hostname === 'api.siliconflow.cn') url.searchParams.set('sub_type', 'chat');
+  }
+  return { url, qwenWorkspace, officialOpenAI: target.officialOpenAI };
+}

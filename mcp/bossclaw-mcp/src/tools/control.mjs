@@ -39,6 +39,8 @@ const RENDERER_ACTIONS = [
   'scheduleToggle',
   // AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时回退本地规则）
   'aiAnalyzeJob',
+  'modelTestConnection',
+  'modelList',
   'aiTailorResume',
   // 浏览器只读探索
   'browserSearch',
@@ -190,11 +192,12 @@ export const controlTools = [
       '  - 业务数据：dataSetResume{text,fileName?}｜dataSetProfile{profile}｜dataSetDirectionPlan{plan}｜dataSetGreetings{items}｜' +
       'dataSetGreetingPrompt{prompt}｜dataSetCommunicationInfo{info}｜dataPendingAdd{item}｜dataPendingUpdate{id,patch}｜' +
       'dataTaskRunUpdate{id,patch}｜dataAddChatLog{entry}｜scheduleAdd{entry}｜scheduleUpdate{id,patch}｜scheduleRemove{id}｜scheduleToggle{id,enabled}\n' +
-      '  - AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时若 agent 在线则转由 bossclaw_agent_* 代答，否则回落本地规则；较长耗时）：aiAnalyzeJob{job,resumeText?,customGreetingPrompt?}｜' +
+      '  - 模型目录：modelList{}（读取当前接入地址可查询的模型 ID）；连通性测试：modelTestConnection{}（只发送固定探测文本）\n' +
+      '  - AI 按需生成（复用工作台定制提示词与技能；未配置 API Key 时由在线 agent 代答，较长耗时）：aiAnalyzeJob{job?,pendingId?,resumeText?,customGreetingPrompt?}（传队列 pendingId 会将结果写回岗位）｜' +
       'aiTailorResume{job,greetingInstructions?}\n' +
       '  - agent 代答（常规用法请走专用工具 bossclaw_agent_tasks / bossclaw_agent_submit / bossclaw_agent_cancel）：' +
       'agentTasks{waitMs?,includeMessages?,limit?}｜agentSubmit{id,content}｜agentCancel{id,reason?}\n' +
-      '  - 浏览器只读探索（webview 引擎可用）：browserSearch{query,city?,page?,pageSize?}｜browserOpenJob{url,tabId?}｜' +
+      '  - 浏览器只读探索（webview 引擎可用）：browserSearch{query,city?,page?,pageSize?,recordTask?}（recordTask:true 显示在任务进度和最近动态）｜browserOpenJob{url,tabId?}｜' +
       'browserReadPage{tabId?}｜browserReadBossProfile{}（返回线上意向、工作与项目经历）｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
       '  - 投递：deliverySetMode（**已禁用**：执行模式受保护，只能由用户在应用设置页切换）｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
       'deliverySendNow{greeting?}（仅 executionMode==\'auto\' 且复用安全引擎）\n' +

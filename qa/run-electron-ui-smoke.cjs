@@ -15,7 +15,7 @@ const packageRoot = resolve(__dirname, '../desktop-app');
 const appRequire = createRequire(join(packageRoot, 'package.json'));
 const { _electron } = appRequire('playwright-core');
 const mammoth = appRequire('mammoth');
-const executablePath = join(packageRoot, 'release', 'win-unpacked', 'BossDot.exe');
+const executablePath = process.env.BOSSDOT_QA_EXE || join(packageRoot, 'release', 'win-unpacked', 'BossDot.exe');
 const registration = require('../.mcp.json').mcpServers.bossdot;
 const onlineResumeUrl = 'https://www.zhipin.com/web/geek/resume';
 const onlineResumeFixture = [
@@ -40,9 +40,35 @@ let draftCalls = 0;
 let reviewCalls = 0;
 let rejectEvidence = false;
 const model = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/v1/models') {
+    assert.equal(req.headers.authorization, 'Bearer local-openai-fixture');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-6-luna' }, { id: 'qa-catalog-only' }, { id: 'qa-catalog-only' }] }));
+    return;
+  }
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (req.url === '/v1/responses') {
+    assert.equal(payload.model, 'gpt-6-luna');
+    assert.equal(payload.text.format.type, 'json_object');
+    assert.equal(payload.reasoning.effort, 'none');
+    assert.ok(payload.max_output_tokens >= 256);
+    assert.deepEqual(Object.keys(payload).sort(), ['input', 'max_output_tokens', 'model', 'reasoning', 'text']);
+    assert.match(payload.input.find(({ role }) => role === 'user').content, /"ok":true/);
+    if (req.headers.authorization === 'Bearer local-quota-fixture') {
+      res.writeHead(429, { 'content-type': 'application/json', 'x-request-id': 'req-offline-quota' });
+      res.end(JSON.stringify({ error: { code: 'insufficient_quota', message: 'Quota expired for local-quota-fixture' } }));
+    } else {
+      assert.equal(req.headers.authorization, 'Bearer local-openai-fixture');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'completed',
+        output: [{ type: 'reasoning' }, { type: 'message', content: [{ type: 'output_text', text: '{"ok":true}' }] }],
+      }));
+    }
+    return;
+  }
   const messages = payload.messages.map(({ content }) => content).join('\n');
   let reply;
   if (payload.response_format?.type !== 'json_object') {
@@ -61,7 +87,7 @@ const model = createServer(async (req, res) => {
 async function runMcpRound(profileDir, generate, exportButton) {
   const child = spawn(registration.command, registration.args, {
     cwd: resolve(packageRoot, '..'),
-    env: { ...process.env, ...registration.env, BOSSCLAW_USERDATA: profileDir },
+    env: { ...process.env, ...registration.env, BOSSCLAW_EXE: executablePath, BOSSCLAW_USERDATA: profileDir },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
@@ -126,6 +152,8 @@ async function runMcpRound(profileDir, generate, exportButton) {
             agentReviews++;
             content = review;
           } else {
+            assert.match(messages, /【AI 技能 · 岗位定制简历】/);
+            assert.doesNotMatch(messages, /【AI 技能 · JD 拆解方法/);
             agentDrafts++;
             content = draft();
           }
@@ -231,16 +259,28 @@ async function run() {
         const guest = document.querySelector('.workbench-host.is-active .browser-pane.is-active webview');
         try { return Math.abs(guest.getZoomFactor() - factor) < 0.005; } catch { return false; }
       }, expected, { timeout: 8000 });
-      return app.evaluate(async ({ webContents }, address) => {
+      return app.evaluate(async ({ webContents }, { address, expectedDpr }) => {
         const guest = webContents.getAllWebContents().find((item) => item.getType() === 'webview' && item.getURL() === address);
         if (!guest) throw new Error('Missing zoom sample webview');
-        return guest.executeJavaScript('innerWidth');
-      }, sampleUrl);
+        for (let attempt = 0; attempt < 40; attempt++) {
+          const metrics = await guest.executeJavaScript('({ width: innerWidth, dpr: devicePixelRatio })');
+          if (Math.abs(metrics.dpr - expectedDpr) < 0.02) return metrics.width;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        throw new Error('Guest viewport did not receive the requested zoom');
+      }, { address: sampleUrl, expectedDpr: expected * hostZoom });
     };
     await app.evaluate(({ webContents }, { address, profileUrl, profileHtml }) => {
       const guest = webContents.getAllWebContents().find((item) => item.getType() === 'webview');
       if (!guest) throw new Error('Missing workbench webview');
       const route = guest.session.protocol.interceptStringProtocol('https', (request, respond) => {
+        const url = new URL(request.url);
+        if (url.pathname === '/wapi/zpgeek/search/joblist.json' && url.searchParams.get('city') === '101020100') {
+          const data = url.searchParams.get('query') === '离线拦截样本'
+            ? { code: 37, message: '环境异常（离线样本）' }
+            : { code: 0, zpData: { jobList: [{ jobName: '测试岗位' }] } };
+          return respond({ mimeType: 'application/json', charset: 'utf-8', data: JSON.stringify(data) });
+        }
         if (request.url !== address && request.url !== profileUrl) return respond({ error: -2 });
         respond({
           mimeType: 'text/html',
@@ -298,6 +338,10 @@ async function run() {
     await onlineProfile.locator('.ant-modal-close').click();
     await addressBar.fill(sampleUrl);
     await addressBar.press('Enter');
+    await page.waitForFunction((url) => {
+      const guest = document.querySelector('.browser-pane.is-active webview');
+      try { return !guest.isLoading() && guest.getURL() === url && guest.getTitle() === '网页缩放验收'; } catch { return false; }
+    }, sampleUrl);
     const navigation = await app.evaluate(({ BrowserWindow, shell }) => {
       const contents = BrowserWindow.getAllWindows()[0].webContents;
       const originalOpen = shell.openExternal;
@@ -314,6 +358,13 @@ async function run() {
     assert.deepEqual(navigation, { prevented: 2, opened: ['https://example.invalid/'] });
     const dispatch = (action, params) => page.evaluate(({ action, params }) =>
       window.__bossclawControl.dispatch({ action, params }), { action, params });
+    const search = await dispatch('browserSearch', { query: '离线搜索样本', city: '上海', recordTask: true });
+    assert.equal(search.applied, true, JSON.stringify(search));
+    const restricted = await dispatch('browserSearch', { query: '离线拦截样本', city: '上海', recordTask: true });
+    assert.equal(restricted.applied, false);
+    const runs = (await dispatch('appDataFull', { sections: ['taskRuns'] })).next.sections.taskRuns.items;
+    assert.equal(runs.find((item) => item.id === search.taskId).discovered, 1);
+    assert.equal(runs.find((item) => item.id === restricted.taskId).status, 'failed');
     await nav.getByRole('button', { name: '设置' }).click();
     await page.getByRole('tab', { name: 'AI / LLM 配置' }).click();
     const skills = page.locator('.settings-section-card').filter({ hasText: 'AI 技能（Skills 层）' });
@@ -331,6 +382,47 @@ async function run() {
     assert.deepEqual(await toggleStates(), defaults);
     await screenshot('skills');
     await page.locator('.main-stage').evaluate((stage) => stage.scrollTo({ top: 0, behavior: 'instant' }));
+    const apiCard = page.locator('.settings-section-card').filter({ hasText: '大模型服务商与 API 接入' });
+    const providerPicker = apiCard.locator('.ant-select-selector').first();
+    const providerOption = (name) => page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content')
+      .filter({ hasText: new RegExp(`^${name}$`) }).first();
+    await providerPicker.click();
+    await providerOption('OpenAI').click();
+    await apiCard.getByText('https://api.openai.com/v1/responses', { exact: true }).waitFor();
+    assert.equal(await apiCard.getByRole('textbox', { name: '模型上下文长度' }).isDisabled(), true);
+    assert.equal(await apiCard.getByText('本地输入用量').isVisible(), false);
+    await apiCard.getByPlaceholder('https://api.openai.com/v1').fill(`http://127.0.0.1:${model.address().port}/v1/responses`);
+    const openAIKey = apiCard.getByPlaceholder('输入 OpenAI 的 API Key');
+    await openAIKey.fill('local-openai-fixture');
+    assert.equal(await openAIKey.inputValue(), 'local-openai-fixture');
+    const openAIConfig = (await dispatch('state', {})).next.settings.config.model;
+    assert.match(openAIConfig.baseUrl, /^http:\/\/127\.0\.0\.1:\d+\/v1\/responses$/);
+    assert.ok(openAIConfig.apiKey);
+    const catalogPicker = apiCard.locator('.llm-keyrow .ant-select-selector');
+    await catalogPicker.click();
+    await apiCard.getByText('接口返回 2 个模型', { exact: true }).waitFor();
+    await apiCard.getByRole('combobox', { name: '模型 ID' }).fill('qa-catalog-only');
+    await providerOption('qa-catalog-only').click();
+    assert.equal(await apiCard.locator('.ant-select-selection-item[title="qa-catalog-only"]').count(), 1);
+    await catalogPicker.click();
+    await providerOption('gpt-6-luna').click();
+    await apiCard.getByRole('button', { name: '测试连接' }).click();
+    await apiCard.getByText('模型已返回有效 JSON').waitFor();
+    await openAIKey.fill('local-quota-fixture');
+    const quota = await dispatch('modelTestConnection', {});
+    assert.equal(quota.next.details.providerCode, 'insufficient_quota');
+    assert.equal(quota.next.details.requestId, 'req-offline-quota');
+    assert.doesNotMatch(quota.message, /local-quota-fixture/);
+    await providerPicker.click();
+    await providerOption('DeepSeek').click();
+    assert.equal(await apiCard.getByPlaceholder('输入 DeepSeek 的 API Key').inputValue(), '');
+    await providerPicker.click();
+    await providerOption('OpenAI').click();
+    assert.equal(await openAIKey.inputValue(), 'local-quota-fixture');
+    await openAIKey.fill('');
+    await apiCard.getByRole('button', { name: '应用官方预设' }).click();
+    await providerPicker.click();
+    await providerOption('DeepSeek').click();
     await screenshot('settings-light');
 
     await page.evaluate(() => window.electron.send('jc:bridge-control', 'start'));
@@ -346,7 +438,7 @@ async function run() {
     assert.ok((await stat(join(profileDir, 'engines', 'bridge-token'))).size > 0);
     await page.evaluate(() => window.electron.send('jc:bridge-control', 'stop'));
     await page.getByPlaceholder('https://api.deepseek.com').fill(`http://127.0.0.1:${model.address().port}`);
-    await page.getByPlaceholder('sk-...').fill('local-fixture');
+    await page.getByPlaceholder('输入 DeepSeek 的 API Key').fill('local-fixture');
     assert.equal((await dispatch('dataSetResume', { text: original, fileName: 'qa-fixture.md' })).applied, true);
     assert.equal((await dispatch('dataSetProfile', { profile: { facts: { experiences: ['甲公司；正式工作'] } } })).applied, true);
     assert.equal((await dispatch('navigate', { route: 'assistant' })).applied, true);
@@ -406,7 +498,7 @@ async function run() {
     await page.getByRole('dialog', { name: '导出定制简历' }).locator('.ant-modal-close').click();
     await nav.getByRole('button', { name: '设置' }).click();
     await page.getByRole('tab', { name: 'AI / LLM 配置' }).click();
-    await page.getByPlaceholder('sk-...').fill('');
+    await page.getByPlaceholder('输入 DeepSeek 的 API Key').fill('');
     await nav.getByRole('button', { name: '定制简历' }).click();
     await title.fill('Agent 定制回归');
     agentResult = await runMcpRound(profileDir, generate, exportButton);
