@@ -4,7 +4,7 @@ type: software
 title: BossDot
 authors:
   - name: Pachin1919
-repository-code: https://github.com/Pachin1919/BossDot
+repository-code: https://github.com/Pachin1919/BossDot-Desktop
 license: Apache-2.0
 references:
   - type: software
