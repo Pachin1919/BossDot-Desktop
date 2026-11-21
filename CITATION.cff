@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "To cite this software, use the BossDot metadata and credit BossClaw as its upstream codebase."
+type: software
+title: BossDot
+authors:
+  - name: Pachin1919
+repository-code: https://github.com/Pachin1919/BossDot
+license: Apache-2.0
+references:
+  - type: software
+    title: BossClaw
+    authors:
+      - name: YanQuan-dozzy
+    version: 2.6.3
+    url: https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.3
+    notes: "Upstream Electron application reused and modified by BossDot."
+  - type: software
+    title: BossHunter
+    authors:
+      - name: "BossHunter contributors"
+    url: https://github.com/shengjidaguai-china/BossHunter
+    notes: "Design reference for greeting review and task tracking."
