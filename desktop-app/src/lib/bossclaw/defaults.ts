@@ -125,7 +125,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     // P1-10：默认模型名/端点由 providerPresets.ts 单源提供，勿再手写模型名（改一处即可）
     provider: DEFAULT_PROVIDER,
     baseUrl: PROVIDER_DEFAULTS[DEFAULT_PROVIDER].baseUrl,
-    apiKey: '',
     // 默认模型名来自 providerPresets.ts（= DeepSeek-V4.1-Flash，原 deepseek-v4-flash 已退役为别名，
     // 第三方网关会 400）；`deepseek-v4-pro` = DeepSeek-V4-Pro-0813。
     model: DEFAULT_MODEL_NAME,

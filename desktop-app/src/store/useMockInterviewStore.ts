@@ -136,7 +136,7 @@ function engineCtx(): MockEngineContext {
 }
 
 function hasApiKey(): boolean {
-  return Boolean(String(useSettingsStore.getState().config.model.apiKey || '').trim());
+  return useSettingsStore.getState().isLLMConfigured();
 }
 
 export type MockInterviewTab = 'interview' | 'bank';

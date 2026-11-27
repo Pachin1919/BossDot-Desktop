@@ -7,6 +7,7 @@
 // - matchedSkills 只能引用简历真实事实；gaps 只写该方向真实缺失的能力，细粒度、如实，不灌水。
 // - 不复用本地一致性缓存（方向计划为确定性小对象，cache key 不稳定），成功失败由调用方降级。
 import type { AppConfig, DirectionItem, Profile } from './types';
+import { hasModelApiKey } from './providerPresets';
 import type { ChatMessage } from './llm';
 import { callModel, extractJson } from './llm';
 import { resolveContextBudget } from './contextBudget';
@@ -82,7 +83,7 @@ export async function refineDirectionCapabilities(
   input: DirectionDetailRefineInput,
   config: AppConfig['model']
 ): Promise<DirectionDetailRefineResult[]> {
-  if (!config?.apiKey) throw new Error('请先在「设置」页填写 AI API Key');
+  if (!config || !hasModelApiKey(config)) throw new Error('请先在「设置」页填写 AI API Key');
   const facts: Profile['facts'] = input.profile?.facts || {
     education: [], experiences: [], projects: [], skills: [], capabilities: [], certificates: [],
   };

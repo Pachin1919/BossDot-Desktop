@@ -6,6 +6,7 @@
  * - 底部整宽区块：AI 打招呼语提示词（工作台定制：提示词正文 + 打招呼语预览）
  */
 import { useRef, useState, useEffect } from 'react';
+import { hasModelApiKey } from '@/lib/bossclaw/providerPresets';
 import {
   Alert,
   Button,
@@ -182,7 +183,7 @@ export default function Resume() {
   };
 
   const onAiPolish = async () => {
-    if (!config.model?.apiKey) {
+    if (!hasModelApiKey(config.model)) {
       message.warning('请先在「设置」页填写 AI API Key 后使用 AI 整理');
       return;
     }

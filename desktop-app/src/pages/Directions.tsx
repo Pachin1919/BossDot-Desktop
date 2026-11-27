@@ -6,6 +6,7 @@
  * - 空态引导（无画像或无方向时的 Empty 提示）
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { hasModelApiKey } from '@/lib/bossclaw/providerPresets';
 import {
   Button,
   Card,
@@ -137,7 +138,7 @@ export default function Directions() {
     // 无论本地还是 AI 的缺口，写入前都统一剔除「画像已具备」项，防止已具备技能误报为缺口。
     const guardGaps = (list: DirectionItem[]) => list.map((it) => ({ ...it, gaps: filterGapsCoveredByProfile(it.gaps, profile) }));
     const sanitized = guardGaps(fresh.items);
-    if (fresh.items.length && config.model?.apiKey) {
+    if (fresh.items.length && hasModelApiKey(config.model)) {
       setAiDetailBusy(true);
       try {
         const details = await refineDirectionCapabilities(
@@ -312,7 +313,7 @@ export default function Directions() {
   const onGenerateKeywords = async (id: string) => {
     const target = items.find((it) => it.id === id);
     if (!target || aiBusyId) return;
-    if (!config.model?.apiKey) {
+    if (!hasModelApiKey(config.model)) {
       message.warning('请先在「设置」页填写 AI API Key 后使用 AI 生成搜索词');
       return;
     }

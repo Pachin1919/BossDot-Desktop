@@ -105,11 +105,6 @@ function countByStatus(items: unknown): Record<string, number> {
   return out;
 }
 
-function maskKey(key?: string): string | null {
-  if (!key) return null;
-  return key.length <= 8 ? `${key.slice(0, 2)}***` : `${key.slice(0, 4)}***${key.slice(-4)}`;
-}
-
 /** 实时状态快照（把内存里的 store 汇总成一个可 JSON 序列化的对象） */
 function snapshotState(): Record<string, unknown> {
   const app = useAppStore.getState();
@@ -149,7 +144,7 @@ function snapshotState(): Record<string, unknown> {
       return { available: true, mode: b.mode, tabs: (() => { try { return b.tabs(); } catch { return []; } })() };
     })(),
     settings: {
-      config: { ...cfg, model: { ...cfg.model, apiKey: maskKey(cfg.model?.apiKey) } },
+      config: { ...cfg, model: { ...cfg.model, apiKey: cfg.model.hasStoredApiKey ? '***' : null } },
       safetyLimits: SAFETY_LIMITS,
     },
     data: {

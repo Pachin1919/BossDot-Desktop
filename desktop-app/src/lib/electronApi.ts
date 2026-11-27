@@ -8,6 +8,7 @@
 //   3. 任何缺失的 API 都以「默认值 + Promise.resolve() / no-op」形式降级，绝不抛错导致 UI 崩溃。
 
 import type { MockIndexEntry, MockSession } from './bossclaw/mockInterviewTypes';
+import type { ModelProvider } from './bossclaw/types';
 import type { QueueFilePayload } from './bossclaw/queueTypes';
 import type { BankMeta, BankQuestion } from './bossclaw/mockInterviewBank';
 import type {
@@ -34,6 +35,21 @@ export interface CamoufoxApiStatus {
 
 const noop = () => {};
 const noopUnsub = () => () => {};
+
+export type ModelKeyOrigins = Partial<Record<ModelProvider, string | null>>;
+export type LegacyModelKey = { provider: ModelProvider; origin: string | null; apiKey: string };
+type ModelKeyResult = { ok: true; origins?: ModelKeyOrigins } | { ok: false; error: string };
+
+async function invokeModelKeys(run: () => Promise<unknown> | undefined): Promise<ModelKeyResult> {
+  try {
+    const request = run();
+    if (!request) return { ok: false, error: '模型密钥安全存储仅在 BossDot 桌面版中可用' };
+    const result = await request as ModelKeyResult;
+    if (result?.ok === true || result?.ok === false) return result;
+  } catch {
+  }
+  return { ok: false, error: '无法访问模型密钥安全存储' };
+}
 
 function api(): NonNullable<Window['electron']> | Record<string, never> {
   if (typeof window === 'undefined') return {};
@@ -148,27 +164,36 @@ export const electronApi = {
     },
   },
 
-  // P05：LLM 主进程代理（主进程 Node fetch 转发，规避渲染层 CORS）
+  modelKeys: {
+    available: (): boolean => Boolean(api().modelKeysStatus),
+    status: () => invokeModelKeys(() => api().modelKeysStatus?.()),
+    migrate: (entries: LegacyModelKey[]) => invokeModelKeys(() => api().modelKeysMigrate?.(entries)),
+    set: (provider: ModelProvider, origin: string | null, key: string) => invokeModelKeys(() => api().modelKeySet?.(provider, origin, key)),
+    clear: () => invokeModelKeys(() => api().modelKeysClear?.()),
+  },
+
+  // P05：LLM 主进程代理（Chromium 网络栈转发，规避渲染层 CORS）
   llmProxy: async (
     url: string,
     payload: unknown,
-    apiKey: string,
+    credential: string | { provider: ModelProvider },
     timeoutMs?: number,
     method?: 'GET' | 'POST',
-  ): Promise<{ ok: boolean; status: number; text: string; error?: string; requestId?: string }> => {
+  ): Promise<{ ok: boolean; status: number; text: string; error?: string; errorKind?: string; requestId?: string }> => {
     try {
       const fn = (api() as Record<string, unknown>).llmProxy as
-        | ((u: string, p: unknown, k: string, t?: number, m?: 'GET' | 'POST') => Promise<unknown>)
+        | ((u: string, p: unknown, k: typeof credential, t?: number, m?: 'GET' | 'POST') => Promise<unknown>)
         | undefined;
       if (!fn) return { ok: false, status: 0, text: '', error: 'llmProxy 不可用' };
-      const r = (await fn(url, payload, apiKey, timeoutMs, method)) as {
-        ok?: boolean; status?: number; text?: string; error?: string; requestId?: string;
+      const r = (await fn(url, payload, credential, timeoutMs, method)) as {
+        ok?: boolean; status?: number; text?: string; error?: string; errorKind?: string; requestId?: string;
       };
       return {
         ok: Boolean(r?.ok),
         status: Number(r?.status || 0),
         text: String(r?.text || ''),
         error: r?.error || undefined,
+        errorKind: r?.errorKind || undefined,
         requestId: r?.requestId || undefined,
       };
     } catch (e) {

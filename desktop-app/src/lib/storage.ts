@@ -6,6 +6,9 @@
 import { discardPendingPersistWrites, persistFailureOf, getLatestPersistSnapshot } from './persistSafe';
 import { isQueueFileMode } from './bossclaw/queueMode';
 import { QUEUE_STORE_KEY, clearQueueStore, getQueueSnapshotText, importQueueData } from './bossclaw/queueRepo';
+import { LEGACY_SETTINGS_KEY, SETTINGS_KEY, sanitizeSettingsSnapshot } from '../../electron/settingsSecrets.mjs';
+import { electronApi } from './electronApi';
+import { modelKeyMigrationPending } from './modelCredentials';
 
 // ===== 存储键登记表（P2-03：单一事实来源）=====
 // 曾被三处重复维护（storage.ts BOSS_CLAW_KEYS / localBackup BACKUP_KEYS / clearAllData 硬编码），
@@ -22,7 +25,7 @@ export interface StorageKeySpec {
 
 export const STORAGE_KEYS: StorageKeySpec[] = [
   { key: 'bossclaw-app', export: true, backup: true, clear: true },
-  { key: 'bossclaw-settings-v2', export: true, backup: true, clear: true },
+  { key: SETTINGS_KEY, export: true, backup: true, clear: true },
   { key: 'bossclaw-data', export: true, backup: true, clear: true },
   // schedule 曾缺于导出键（P2-03）：导出数据将丢失全部定时投递/采集任务定义，且导入端静默成功
   { key: 'bossclaw-schedule', export: true, backup: true, clear: true },
@@ -57,7 +60,11 @@ export const EXPORT_KEYS = keysWhere((s) => s.export);
 export const BACKUP_KEYS = keysWhere((s) => s.backup);
 
 /** 同时识别老 key（v1 历史版本），仅导出、不参与导入，避免误删后无法恢复 */
-const LEGACY_KEYS = ['bossclaw-settings'] as const;
+const LEGACY_KEYS = [LEGACY_SETTINGS_KEY] as const;
+
+export function portableStorageValue(key: string, value: string | null): string | null {
+  return key === SETTINGS_KEY || key === LEGACY_SETTINGS_KEY ? sanitizeSettingsSnapshot(value) : value;
+}
 
 export function exportData(): string {
   const data: Record<string, string | null> = {};
@@ -71,10 +78,11 @@ export function exportData(): string {
     // 用户以为救下的其实是那批已经过期的数据。改用 persist 内存中的最新值。
     const failed = persistFailureOf(k);
     const snap = failed ? getLatestPersistSnapshot(k) : null;
-    data[k] = snap != null ? snap : localStorage.getItem(k);
+    data[k] = portableStorageValue(k, snap ?? localStorage.getItem(k));
   }
   for (const k of LEGACY_KEYS) {
-    if (localStorage.getItem(k) != null) data[`__legacy__${k}`] = localStorage.getItem(k);
+    const clean = portableStorageValue(k, localStorage.getItem(k));
+    if (clean != null) data[`__legacy__${k}`] = clean;
   }
   return JSON.stringify(data, null, 2);
 }
@@ -85,8 +93,17 @@ export async function importData(json: string): Promise<{ ok: boolean; error?: s
   let data: Record<string, string | null>;
   try {
     data = JSON.parse(json);
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
+  } catch {
+    return { ok: false, error: '导入文件不是有效的 JSON' };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: '导入格式无效' };
+  if (SETTINGS_KEY in data) {
+    if (modelKeyMigrationPending()) return { ok: false, error: '请先完成旧 API Key 迁移，再导入设置' };
+    if (data[SETTINGS_KEY] != null) {
+      const clean = sanitizeSettingsSnapshot(data[SETTINGS_KEY]);
+      if (clean === null) return { ok: false, error: '导入文件中的设置格式无效' };
+      data[SETTINGS_KEY] = clean;
+    }
   }
   // 队列在文件模式下先落文件：写失败就整体中止，避免「设置/简历已导入、队列还停在旧值」的半截状态
   if (isQueueFileMode() && QUEUE_STORE_KEY in data) {
@@ -135,6 +152,10 @@ export async function importData(json: string): Promise<{ ok: boolean; error?: s
 }
 
 export async function clearAllData(): Promise<void> {
+  if (electronApi.modelKeys.available()) {
+    const keys = await electronApi.modelKeys.clear();
+    if (!keys.ok) throw new Error(keys.error);
+  }
   // P30：先丢弃 persist 防抖窗口内残留的待写值——否则清空后若窗口内有旧值，reload 前的
   // pagehide flush 会把这些旧状态写回 localStorage，导致「清空/恢复出厂」无效
   discardPendingPersistWrites();

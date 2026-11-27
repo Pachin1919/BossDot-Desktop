@@ -6,7 +6,7 @@ import { electronApi } from '@/lib/electronApi';
 import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
-import { resolveModelCatalog, resolveModelTarget } from './providerPresets';
+import { hasModelApiKey, resolveModelCatalog, resolveModelTarget } from './providerPresets';
 import { contextBudgetSignature } from './contextBudget'; // 缓存 key 需含上下文预算口径（见 cachedCallModel）
 
 export class AIError extends Error {
@@ -351,10 +351,12 @@ interface HttpResponseLike {
   requestId?: string;
 }
 
-async function requestModel(url: string, payload: Record<string, unknown> | null, apiKey: string, timeoutMs: number): Promise<HttpResponseLike> {
+async function requestModel(url: string, payload: Record<string, unknown> | null, config: AppConfig['model'], timeoutMs: number): Promise<HttpResponseLike> {
   try {
-    const r = await electronApi.llmProxy(url, payload, apiKey, timeoutMs, payload === null ? 'GET' : 'POST');
+    const credential = config.hasStoredApiKey ? { provider: config.provider } : config.apiKey?.trim() ?? '';
+    const r = await electronApi.llmProxy(url, payload, credential, timeoutMs, payload === null ? 'GET' : 'POST');
     if (!r.ok && r.error) {
+      if (r.errorKind === 'credential') throw new AIError('AI_CONFIG', r.error);
       if (r.error === 'timeout') throw new AIError('AI_TIMEOUT', 'AI 请求超时');
       throw new AIError('AI_NETWORK', `无法连接模型服务。请检查服务地址和系统网络（${r.error}）`);
     }
@@ -387,14 +389,14 @@ function modelNameHint(status: number, bodyText: string): string {
   return `\n提示：当前端点只支持模型 ${supported}。请在「设置 → 大模型服务商与 API 接入」把「模型名称」改成上述之一（也可点「服务商预设」重新套用官方默认模型名）。`;
 }
 
-function modelHttpError(response: HttpResponseLike, apiKey: string): AIError {
+function modelHttpError(response: HttpResponseLike, apiKey?: string): AIError {
   const { status, text: bodyText, requestId } = response;
   let providerMessage = '';
   let providerCode = '';
   try {
     const body = JSON.parse(bodyText);
-    providerMessage = String(body?.error?.message ?? body?.message ?? '')
-      .split(apiKey).join('[已隐藏]').replace(/sk-[\w*.-]{8,}/g, '[已隐藏]');
+    providerMessage = String(body?.error?.message ?? body?.message ?? '').replace(/sk-[\w*.-]{8,}/g, '[已隐藏]');
+    if (apiKey) providerMessage = providerMessage.split(apiKey.trim()).join('[已隐藏]');
     providerCode = String(body?.error?.code ?? body?.code ?? body?.error?.type ?? '');
     if (!/^[\w.-]{1,80}$/.test(providerCode)) providerCode = '';
   } catch {
@@ -436,15 +438,12 @@ function modelHttpError(response: HttpResponseLike, apiKey: string): AIError {
 export async function callModel(messages: ChatMessage[], config: AppConfig['model'], options: CallOptions = {}): Promise<any> {
   const jsonMode = options.jsonMode ?? true;
   const baseMaxTokens = effectiveMaxTokens(options.maxTokens, jsonMode);
-  // P1-11：apiKey 去空白——粘贴进设置时经常带首尾空格，「  sk-xxx  」会被当成有效 Key 发送
-  // 并拿到含糊的鉴权报错；统一 trim 后再判定「未配置 → agent 代答」
-  const apiKey = String(config?.apiKey || '').trim();
   // 官方要求②兜底：JSON 模式 prompt 必须含 json 字样，并统一注入 JSON 输出契约（幂等）。
   // 已合规时原样透传，不改动 messages（保住服务端 prompt cache 前缀）。
   const effectiveMessages = jsonMode ? ensureJsonPromptContract(messages) : messages;
   // 未配置 API Key：优先交给外部 agent 代答（agent 在线时把任务挂进本地队列，等 agent 用自有模型回填，
   // 结果形态与真实模型调用完全一致）；agent 不在线 / 超时未答 / 主动放弃 → 抛 AIError 由上层走本地规则兜底。
-  if (!apiKey) {
+  if (!hasModelApiKey(config)) {
     // 「AI 未用上」的行为事实：只在**首次**发生时记一条 WARN（本会话内去重），避免批量分析时刷屏。
     // 归因说清楚是「未配置 API Key」，不是网络超时；引导去设置页配置，不暴露代答通道 / MCP 工具名。
     if (!aiMissingKeyLogged) {
@@ -522,12 +521,12 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
       }
     }
 
-    let response = await requestModel(target.url, payload, apiKey, timeoutMs);
+    let response = await requestModel(target.url, payload, config, timeoutMs);
     if (!response.ok && jsonMode && [400, 422].includes(response.status) && /response[_ -]?format|json_object|text\.format/i.test(response.text)) {
       delete payload[target.protocol === 'responses' ? 'text' : 'response_format'];
-      response = await requestModel(target.url, payload, apiKey, timeoutMs);
+      response = await requestModel(target.url, payload, config, timeoutMs);
     }
-    if (!response.ok) throw modelHttpError(response, apiKey);
+    if (!response.ok) throw modelHttpError(response, config.apiKey);
 
     let result: any;
     try {
@@ -679,7 +678,7 @@ export async function testModelConnection(config: AppConfig['model']) {
   const target = resolveModelTarget(config);
   const request = target ? { model: target.model, endpoint: target.endpoint, protocol: target.protocol } : null;
   try {
-    if (!config.apiKey?.trim() || !target?.model) throw new AIError('AI_CONFIG', '请填写有效的接入地址、模型 ID 和 API Key');
+    if (!hasModelApiKey(config) || !target?.model) throw new AIError('AI_CONFIG', '请填写有效的接入地址、模型 ID 和 API Key');
     const output = await callModel(
       [{ role: 'user', content: '这是连通性测试。仅返回 JSON 对象 {"ok":true}。' }],
       config,
@@ -700,9 +699,8 @@ export async function testModelConnection(config: AppConfig['model']) {
 type ModelCatalog = { ok: true; ids: string[]; complete: boolean } | { ok: false; message: string };
 
 export async function fetchModelCatalog(config: AppConfig['model']): Promise<ModelCatalog> {
-  const apiKey = config.apiKey?.trim();
   const catalog = resolveModelCatalog(config);
-  if (!catalog || !apiKey) return { ok: false, message: '请填写支持目录查询的接入地址和 API Key' };
+  if (!catalog || !hasModelApiKey(config)) return { ok: false, message: '请填写支持目录查询的接入地址和 API Key' };
 
   const ids = new Set<string>();
   const { url, qwenWorkspace, officialOpenAI } = catalog;
@@ -711,10 +709,10 @@ export async function fetchModelCatalog(config: AppConfig['model']): Promise<Mod
   try {
     for (let page = 1; page <= 5; page++) {
       if (qwenWorkspace) url.searchParams.set('page_no', String(page));
-      const response = await requestModel(url.href, null, apiKey, 12_000);
+      const response = await requestModel(url.href, null, config, 12_000);
       if (!response.ok) {
         if (response.status === 404) return { ok: false, message: '当前地址未提供模型目录（HTTP 404），可选用官方预设或填写模型 ID。' };
-        throw modelHttpError(response, apiKey);
+        throw modelHttpError(response, config.apiKey);
       }
 
       const body = JSON.parse(response.text);
@@ -1135,7 +1133,7 @@ export async function cachedCallModel(
   const key = hashText(
     JSON.stringify([
       scope,
-      config.apiKey?.trim() ? 'api' : 'agent',
+      hasModelApiKey(config) ? 'api' : 'agent',
       config.provider,
       config.model,
       temperature,

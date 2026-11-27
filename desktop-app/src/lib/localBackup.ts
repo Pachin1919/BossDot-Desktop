@@ -23,7 +23,9 @@ import {
   getLatestPersistSnapshot,
   onPersistFailure,
 } from './persistSafe';
-import { BACKUP_KEYS } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
+import { BACKUP_KEYS, portableStorageValue } from './storage';
+import { SETTINGS_KEY } from '../../electron/settingsSecrets.mjs';
+import { modelKeyMigrationPending } from './modelCredentials';
 import { isQueueFileMode } from './bossclaw/queueMode';
 import {
   QUEUE_STORE_KEY,
@@ -76,12 +78,12 @@ export function gatherBundle(): BackupBundle {
     if (persistFailureOf(k)) {
       const snap = getLatestPersistSnapshot(k);
       if (snap != null) {
-        keys[k] = snap;
+        keys[k] = portableStorageValue(k, snap);
         continue;
       }
     }
     try {
-      keys[k] = typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null;
+      keys[k] = portableStorageValue(k, typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null);
     } catch {
       keys[k] = null;
     }
@@ -184,9 +186,16 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
     // 一份被篡改/损坏的备份文件可写入任意键（如注入伪造的配置/数据键）。
     const allowed = new Set<string>(BACKUP_KEYS);
     let legacyQueueText: string | null = null;
-    for (const [k, v] of Object.entries(r.bundle.keys)) {
+    for (const [k, value] of Object.entries(r.bundle.keys)) {
       try {
         if (!allowed.has(k)) continue;
+        if (k === SETTINGS_KEY && modelKeyMigrationPending()) {
+          failedKeys.push(k);
+          continue;
+        }
+        if (value != null && typeof value !== 'string') continue;
+        const v = portableStorageValue(k, value);
+        if (value !== null && v === null) continue;
         if (k === QUEUE_STORE_KEY && !isQueueFileMode()) {
           // 回滚模式：队列要并回 bossclaw-data，不能孤立写入无人读取的键
           legacyQueueText = typeof v === 'string' ? v : null;

@@ -264,17 +264,16 @@ export function camoufoxSearch(
   criteria?: Record<string, unknown>,
   force = false,
   /**
-   * M-11：向 Python 侧透传断点续采 TTL 配置。
-   * ⚠️ 只允许传「非敏感子集」（如 `{ platforms }`）——**严禁整份 settings.config**，
-   * 其中含 `model.apiKey`，透传会把密钥写进本地桥请求体。
+   * 向 Python 侧透传断点续采 TTL 配置，只读取平台和采集设置。
    */
   config?: Record<string, unknown>,
 ): Promise<CamoufoxSearchResult> {
+  const searchConfig = config && { platforms: config.platforms, search: config.search };
   return camoufoxCall<CamoufoxSearchResult>('search', {
     query, city, pages, os: os || undefined, platform,
     criteria: criteria && Object.keys(criteria).length ? criteria : undefined,
     force: force || undefined,
-    config: config && Object.keys(config).length ? config : undefined,
+    config: searchConfig,
   });
 }
 

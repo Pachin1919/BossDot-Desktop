@@ -8,7 +8,10 @@ const { app, BrowserWindow, ipcMain, shell, Menu, session, net, clipboard, dialo
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const { spawn, execFile } = require('node:child_process');
+const modelKeys = require('./modelKeys.cjs');
+const { sanitizeBackupSettings } = require('./settingsSecrets.mjs');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
 // 内置浏览器「主世界」反检测补丁 + 指纹自检（补丁本体与探针同一模块，见文件头说明）
@@ -419,6 +422,7 @@ async function resolveDevUrl() {
 const DIST_INDEX = path.join(__dirname, '..', 'dist', 'index.html');
 
 let mainWindow = null;
+let mainAppPage = null;
 let bridgeProcess = null;
 // 本地控制桥句柄（BOSSCLAW_CONTROL=1 时才非空）
 let controlBridge = null;
@@ -1025,9 +1029,11 @@ async function createMainWindow() {
     });
   };
 
+  mainAppPage = pathToFileURL(DIST_INDEX).href;
   if (isDev) {
     const url = await resolveDevUrl();
     if (url) {
+      mainAppPage = new URL(url).href;
       loadWithFallback(mainWindow.loadURL(url), 'dev-url');
     } else if (fs.existsSync(DIST_INDEX)) {
       // Vite 未就绪：回退加载最后一次构建产物，避免白屏
@@ -2068,8 +2074,27 @@ function backupCtl() {
   return { pointer, defaultDir, readPointer, fileIn };
 }
 
+async function writeBackupFile(file, text) {
+  const tmp = `${file}.tmp-${crypto.randomUUID()}`;
+  try {
+    await fs.promises.writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
+    await fs.promises.rename(tmp, file);
+  } finally {
+    await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
+async function scrubBackupFile(file) {
+  try {
+    const bundle = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    if (sanitizeBackupSettings(bundle)) await writeBackupFile(file, JSON.stringify(bundle));
+  } catch (error) {
+    if (error.code !== 'ENOENT') dlog('warn', '无法清理旧备份中的模型凭据');
+  }
+}
+
 /** 校验并持久化一个备份目录（绝对路径；自动创建、拷贝旧备份、写指针） */
-function applyBackupDir(dir) {
+async function applyBackupDir(dir) {
   if (!path.isAbsolute(dir)) return { ok: false, error: '备份目录须为绝对路径' };
   const ctl = backupCtl();
   const oldDir = ctl.readPointer();
@@ -2079,9 +2104,16 @@ function applyBackupDir(dir) {
     const src = ctl.fileIn(oldDir);
     const dst = ctl.fileIn(dir);
     if (fs.existsSync(src) && !fs.existsSync(dst)) {
-      try { fs.copyFileSync(src, dst); } catch (e) { dlog('warn', 'backup dir copy failed', { message: e?.message }); }
+      try {
+        const bundle = JSON.parse(await fs.promises.readFile(src, 'utf8'));
+        sanitizeBackupSettings(bundle);
+        await writeBackupFile(dst, JSON.stringify(bundle));
+      } catch (e) {
+        dlog('warn', 'backup dir copy failed', { code: e?.code });
+      }
     }
   }
+  await scrubBackupFile(ctl.fileIn(dir));
   fs.writeFileSync(ctl.pointer(), dir);
   return { ok: true, dir };
 }
@@ -2093,7 +2125,7 @@ safeHandle('jc:backup-dir-get', async () => {
 
 safeHandle('jc:backup-dir-set', async (_event, dirPath) => {
   try {
-    return applyBackupDir(String(dirPath || '').trim());
+    return await applyBackupDir(String(dirPath || '').trim());
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -2107,7 +2139,7 @@ safeHandle('jc:backup-dir-pick', async () => {
       properties: ['openDirectory', 'createDirectory'],
     });
     if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
-    return applyBackupDir(filePaths[0]);
+    return await applyBackupDir(filePaths[0]);
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -2117,24 +2149,17 @@ safeHandle('jc:backup-write', async (_event, bundle) => {
   const ctl = backupCtl();
   const dir = ctl.readPointer();
   const filep = ctl.fileIn(dir);
-  // 审查 #29：临时文件名必须**每次唯一**。固定 `filep + '.tmp'` 时，两次并发写（心跳与
-  // 「立即备份」重叠、或多实例同时写同一目录）会写到同一个 tmp 再各自 rename ——
-  // writeFile 截断 + 交叉写入 → rename 后可能得到一个内容残缺的备份文件（而它会被当作
-  // 「完好备份」，直接毁掉恢复源）。唯一名 + rename 保证「要么旧文件、要么新文件」。
-  const tmp = `${filep}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await fs.promises.mkdir(dir, { recursive: true });
-    // 渲染层已按 '{"updatedAt":N,"keys":…}' 拼好文本直传；旧对象格式仍兼容（手动兜底序列化）
-    const text = typeof bundle === 'string' ? bundle : JSON.stringify(bundle ?? {});
+    const parsed = typeof bundle === 'string' ? JSON.parse(bundle) : bundle;
+    if (!parsed || typeof parsed.keys !== 'object' || parsed.keys === null) return { ok: false, error: '备份格式无效' };
+    const changed = sanitizeBackupSettings(parsed);
+    const text = typeof bundle === 'string' && !changed ? bundle : JSON.stringify(parsed);
     if (text.length < 4) return { ok: false, error: '备份内容为空' };
-    // 异步原子写（tmp + rename）：不阻塞主进程事件循环（同步 writeFileSync 在大包/慢盘时会卡窗口），
-    // 中途失败也不会损坏上一次完好备份
-    await fs.promises.writeFile(tmp, text, 'utf8');
-    await fs.promises.rename(tmp, filep);
+    await writeBackupFile(filep, text);
     return { ok: true, file: filep, size: Buffer.byteLength(text) };
   } catch (e) {
-    try { if (fs.existsSync(tmp)) await fs.promises.unlink(tmp); } catch { /* 清理失败忽略 */ }
-    return { ok: false, error: String((e && e.message) || e) };
+    return { ok: false, error: e instanceof SyntaxError ? '备份格式无效' : String((e && e.message) || e) };
   }
 });
 
@@ -2147,6 +2172,7 @@ safeHandle('jc:backup-read', async () => {
     let parsed = null;
     try { parsed = JSON.parse(raw); } catch { parsed = null; }
     if (!parsed) return { ok: false, file: null, error: '备份文件损坏' };
+    sanitizeBackupSettings(parsed);
     return { ok: true, file: filep, bundle: parsed };
   } catch (e) {
     return { ok: false, file: null, error: String((e && e.message) || e) };
@@ -2718,13 +2744,50 @@ safeHandle('jc:fetch-url', async (_event, url) => {
 // 渲染层不再直连 provider（规避部分端点 CORS 失败、统一主进程超时/错误口径），经此转发。
 // M-1：允许本机地址（本地模型服务如 Ollama），但**公网必须 https**（防 API Key 明文传输）；
 //     响应体加 32MB 上限（L-2），避免超大响应撑爆主进程内存。
-safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000, method = 'POST') => {
+function isMainAppFrame(event) {
+  const frame = event.senderFrame;
+  if (event.sender !== mainWindow?.webContents || !frame || frame.parent || !URL.canParse(frame.url)) return false;
+  const url = new URL(frame.url);
+  url.hash = '';
+  url.search = '';
+  return url.href === mainAppPage;
+}
+
+function handleModelKeys(channel, action) {
+  safeHandle(channel, async (event, ...args) => {
+    if (!isMainAppFrame(event)) return { ok: false, error: '仅主窗口可以管理模型密钥' };
+    try {
+      return { ok: true, origins: await action(...args) };
+    } catch (error) {
+      return { ok: false, error: error instanceof TypeError ? '模型密钥参数无效' : error.message };
+    }
+  });
+}
+
+handleModelKeys('jc:model-keys-status', () => modelKeys.status());
+handleModelKeys('jc:model-keys-migrate', (entries) => modelKeys.migrate(entries));
+handleModelKeys('jc:model-key-set', (provider, origin, key) => modelKeys.set(provider, origin, key));
+handleModelKeys('jc:model-keys-clear', () => modelKeys.clear());
+
+function redactModelKey(value, key) {
+  if (!value || !key) return value;
+  const quoted = JSON.stringify(key);
+  if (key.length < 8) return value === key ? '[已隐藏]' : value.split(quoted).join('"[已隐藏]"');
+  return value.split(quoted.slice(1, -1)).join('[已隐藏]').split(key).join('[已隐藏]');
+}
+
+safeHandle('jc:llm-proxy', async (event, url, payload, credential, timeoutMs = 90000, method = 'POST') => {
+  if (!isMainAppFrame(event)) return { ok: false, status: 0, text: '', error: '仅主窗口可以调用模型接口' };
   const chk = outboundUrlCheck(url, { allowLoopback: true, requireHttpsOffLoopback: true });
   if (!chk.ok) return { ok: false, status: 0, text: '', error: chk.error };
-  const target = chk.url;
-  // P1-11：apiKey 从网页复制常带尾部空格/换行，trim 后再拼 Authorization 头，
-  // 否则 fetch 会抛 `TypeError: Invalid value` 且被下面 catch 吞成模糊的失败信息。
-  const key = String(apiKey || '').trim();
+  const target = new URL(chk.url);
+  let key;
+  try {
+    key = typeof credential === 'string' ? credential.trim() : await modelKeys.resolve(credential?.provider, target.origin);
+    if (!key) throw new Error('请先在设置中保存模型 API Key');
+  } catch (error) {
+    return { ok: false, status: 0, text: '', error: error.message, errorKind: 'credential' };
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 90000));
   const readOnly = method === 'GET';
@@ -2738,13 +2801,13 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
       redirect: 'error',
       signal: ctrl.signal,
     });
-    const text = await readResponseTextCapped(res);
+    const text = redactModelKey(await readResponseTextCapped(res), key);
     return {
       ok: res.ok, status: res.status, text,
-      requestId: res.headers.get('x-request-id') || res.headers.get('x-siliconcloud-trace-id') || undefined,
+      requestId: redactModelKey(res.headers.get('x-request-id') || res.headers.get('x-siliconcloud-trace-id'), key) || undefined,
     };
   } catch (e) {
-    const msg = String((e && e.message) || e);
+    const msg = redactModelKey(String((e && e.message) || e), key);
     const timedOut = /aborted?|timeout/i.test(msg);
     return {
       ok: false, status: 0, text: '',
@@ -3137,6 +3200,9 @@ app.whenReady().then(async () => {
   // 数据版本重置：v3 重建后首次启动清空旧登录态/缓存（一次性，见 resetDataForVersion）。
   // 必须 await 完成后再创建窗口——否则清理会与用户「首次启动后立即登录」的写入竞态。
   await resetDataForVersion();
+  const backup = backupCtl();
+  const backupDirs = new Set([backup.defaultDir(), backup.readPointer()]);
+  await Promise.all([...backupDirs].map((dir) => scrubBackupFile(backup.fileIn(dir))));
   // 移除默认应用菜单栏（File / Edit / View / Window / Help）
   Menu.setApplicationMenu(null);
 
