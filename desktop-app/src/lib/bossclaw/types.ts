@@ -207,7 +207,10 @@ export interface AppConfig {
   model: {
     provider: ModelProvider;
     baseUrl: string;
-    apiKey: string;
+    /** Explicit, in-memory key for callers outside the settings store. */
+    apiKey?: string;
+    /** Runtime status of the key held by Electron for this provider and origin. */
+    hasStoredApiKey?: boolean;
     model: string;
     temperature: number;
     /**

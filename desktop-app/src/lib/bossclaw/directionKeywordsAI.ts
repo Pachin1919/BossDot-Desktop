@@ -7,6 +7,7 @@
 // - 未配置 API Key / 调用失败时抛错，由调用方提示用户，不静默改动方向数据。
 
 import type { AppConfig, DirectionItem, Profile } from './types';
+import { hasModelApiKey } from './providerPresets';
 import type { ChatMessage } from './llm';
 import { callModel, extractJson } from './llm';
 import { normalizeDirectionKey, normalizeStringList } from './helpers';
@@ -70,7 +71,7 @@ export async function generateDirectionKeywords(
   input: GenerateDirectionKeywordsInput,
   config: AppConfig['model']
 ): Promise<string[]> {
-  if (!config?.apiKey) throw new Error('请先在「设置」页填写 AI API Key');
+  if (!config || !hasModelApiKey(config)) throw new Error('请先在「设置」页填写 AI API Key');
   const { item, profile } = input;
   const existing = normalizeStringList(item?.keywords, 20);
   const skills = normalizeStringList(profile?.facts?.skills, 12);

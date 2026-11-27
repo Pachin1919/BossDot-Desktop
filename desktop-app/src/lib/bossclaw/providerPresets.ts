@@ -78,6 +78,10 @@ export const PROVIDER_DEFAULTS: Record<LLMProvider, ProviderPreset> = {
 export const DEFAULT_PROVIDER: LLMProvider = 'deepseek';
 export const DEFAULT_MODEL_NAME = PROVIDER_DEFAULTS[DEFAULT_PROVIDER].model;
 
+export function hasModelApiKey(config: Pick<AppConfig['model'], 'apiKey' | 'hasStoredApiKey'> | null | undefined): boolean {
+  return Boolean(config?.hasStoredApiKey || config?.apiKey?.trim());
+}
+
 export function resolveModelTarget(config: Pick<AppConfig['model'], 'provider' | 'baseUrl' | 'model'>) {
   const preset = PROVIDER_DEFAULTS[config.provider] ?? PROVIDER_DEFAULTS.custom;
   const model = config.model?.trim() || preset.model;

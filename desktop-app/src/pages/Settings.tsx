@@ -68,7 +68,7 @@ import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
 import type { SettingsTabKey } from '@/store/useAppStore';
 import { fetchModelCatalog, testModelConnection, clearAICache, getAICacheStats, getLLMUsageStats, resetLLMUsageStats } from '@/lib/bossclaw/llm';
-import { resolveModelCatalog, resolveModelTarget } from '@/lib/bossclaw/providerPresets';
+import { hasModelApiKey, resolveModelCatalog, resolveModelTarget } from '@/lib/bossclaw/providerPresets';
 import {
   allSkillsWithState,
   setSkillEnabled,
@@ -184,7 +184,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   useEffect(() => {
     visibleRef.current = isVisible;
   }, [isVisible]);
-  const { config, setConfig, setModel, applyProviderDefaults, selectProvider, isLLMConfigured } = useSettingsStore();
+  const { config, setConfig, setModel, applyProviderDefaults, selectProvider, isLLMConfigured, modelKeyOrigins, modelKeyError, initializeModelKeys, saveModelKey } = useSettingsStore();
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const setRoute = useAppStore((s) => s.setRoute);
@@ -194,6 +194,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const requestBrowserLogin = useAppStore((s) => s.requestBrowserLogin);
 
   const [testing, setTesting] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [savingApiKey, setSavingApiKey] = useState(false);
   const [testResult, setTestResult] = useState<Awaited<ReturnType<typeof testModelConnection>> | null>(null);
   const [catalog, setCatalog] = useState<Awaited<ReturnType<typeof fetchModelCatalog>> | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -567,15 +569,36 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     }
   };
 
-  const testConnection = async () => {
-    if (!isLLMConfigured()) {
-      message.warning('请先填写 Base URL / API Key / 模型名');
-      return;
+  const updateApiKey = async (remove = false): Promise<boolean> => {
+    setSavingApiKey(true);
+    setTestResult(null);
+    setCatalog(null);
+    try {
+      const error = await saveModelKey(config.model, remove ? '' : apiKeyDraft);
+      if (error) {
+        message.error(error);
+        return false;
+      }
+      setApiKeyDraft((draft) => draft === apiKeyDraft ? '' : draft);
+      message.success(remove ? '已删除本机 API Key' : '已加密保存 API Key');
+      return true;
+    } finally {
+      setSavingApiKey(false);
     }
+  };
+
+  const testConnection = async () => {
     setTesting(true);
     setTestResult(null);
-    const testedModel = config.model;
     try {
+      if (apiKeyDraft.trim() && !await updateApiKey()) return;
+      const settings = useSettingsStore.getState();
+      const testedModel = settings.config.model;
+      if (testedModel.provider !== config.model.provider || testedModel.baseUrl !== config.model.baseUrl) return;
+      if (!settings.isLLMConfigured()) {
+        message.warning('请先填写接入地址、模型名和 API Key');
+        return;
+      }
       const result = await testModelConnection(testedModel);
       if (useSettingsStore.getState().config.model === testedModel) setTestResult(result);
     } finally {
@@ -590,7 +613,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     try {
       const result = await fetchModelCatalog(tested);
       const current = useSettingsStore.getState().config.model;
-      if (current.provider === tested.provider && current.baseUrl === tested.baseUrl && current.apiKey === tested.apiKey) {
+      if (current === tested) {
         setCatalog(result);
       }
     } finally {
@@ -760,7 +783,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const llmPreset = PROVIDER_DEFAULTS[config.model.provider] ?? PROVIDER_DEFAULTS.custom;
   const llmTarget = resolveModelTarget(config.model);
   const catalogAvailable = !!resolveModelCatalog(config.model);
-  const canFetchCatalog = catalogAvailable && !!config.model.apiKey?.trim();
+  const canFetchCatalog = catalogAvailable && hasModelApiKey(config.model) && !apiKeyDraft.trim() && !savingApiKey;
+  const providerHasSavedKey = Object.prototype.hasOwnProperty.call(modelKeyOrigins, config.model.provider);
   const liveModels = catalog?.ok ? catalog.ids : [];
   const presetModels = llmPreset.models.filter((id) => !liveModels.includes(id));
   const typedModel = modelQuery.trim();
@@ -1691,6 +1715,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   value={config.model.provider as LLMProvider}
                   onChange={(p) => {
                     selectProvider(p);
+                    setApiKeyDraft('');
                     setTestResult(null);
                     setCatalog(null);
                   }}
@@ -1809,21 +1834,44 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <span className="field-label">API Key</span>
               <div className="llm-keyrow">
                 <Input.Password
-                  value={config.model.apiKey}
-                  onChange={(e) => { setModel({ apiKey: e.target.value }); setTestResult(null); setCatalog(null); }}
-                  placeholder={`输入 ${llmPreset.label} 的 API Key`}
+                  value={apiKeyDraft}
+                  onChange={(e) => { setApiKeyDraft(e.target.value); setTestResult(null); setCatalog(null); }}
+                  placeholder={config.model.hasStoredApiKey ? '已加密保存，输入新密钥可替换' : `输入 ${llmPreset.label} 的 API Key`}
+                  autoComplete="new-password"
                 />
                 <Button
                   type="primary"
                   icon={<CheckCircleOutlined />}
                   loading={testing}
+                  disabled={savingApiKey}
                   onClick={testConnection}
                   className="btn-uniform"
                 >
                   测试连接
                 </Button>
               </div>
+              <Space wrap style={{ marginTop: 8 }}>
+                <Button disabled={!apiKeyDraft.trim() || testing} loading={savingApiKey} onClick={() => void updateApiKey()}>
+                  保存密钥
+                </Button>
+                {providerHasSavedKey && (
+                  <Button danger disabled={savingApiKey || testing} onClick={() => void updateApiKey(true)}>删除已保存密钥</Button>
+                )}
+                {providerHasSavedKey && !config.model.hasStoredApiKey && (
+                  <Text type="secondary">此接入地址需要重新保存密钥。</Text>
+                )}
+              </Space>
             </div>
+
+            {modelKeyError && (
+              <Alert
+                style={{ marginTop: 14 }}
+                type="warning"
+                showIcon
+                message={modelKeyError}
+                action={<Button size="small" onClick={() => void initializeModelKeys()}>重试</Button>}
+              />
+            )}
 
             {testResult && (
               <Alert
@@ -1841,7 +1889,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             )}
 
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
-              API Key 明文保存在此设备上。连接测试只向所选服务发送一条固定的 JSON 测试提示词。
+              API Key 由本机系统加密保存。换设备后需要重新填写。连接测试向所选服务发送一条固定的 JSON 测试提示词。
             </Paragraph>
             <details style={{ marginTop: 16 }}>
               <summary>本地资料裁剪</summary>

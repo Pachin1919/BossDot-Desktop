@@ -11,6 +11,10 @@ interface ElectronBridgeApi {
   bossLogout?: (platform: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
   // 本地桥（OpenClaw）访问令牌（随机生成，存于 ~/.bossclaw/bridge-token）
   bridgeToken?: () => Promise<string>;
+  modelKeysStatus?: () => Promise<unknown>;
+  modelKeysMigrate?: (keys: import('./lib/electronApi').LegacyModelKey[]) => Promise<unknown>;
+  modelKeySet?: (provider: import('./lib/bossclaw/types').ModelProvider, origin: string | null, key: string) => Promise<unknown>;
+  modelKeysClear?: () => Promise<unknown>;
   webviewPreload?: string;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send?: (channel: string, ...args: unknown[]) => void;

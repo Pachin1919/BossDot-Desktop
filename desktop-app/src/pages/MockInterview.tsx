@@ -6,6 +6,7 @@
 //   ③ 主工作区（flex:1）—— 配置 / 进行 / 反问 / 报告 / 题库 五态
 // 根节点 absolute inset:0 铺满 .main-stage（跳过其 24px padding）；两栏各自 overflow-y:auto。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { hasModelApiKey } from '@/lib/bossclaw/providerPresets';
 import {
   Alert,
   Button,
@@ -146,7 +147,7 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   const clearMockInterview = useAppStore((s) => s.clearMockInterview);
   const openSettings = useAppStore((s) => s.openSettings);
   const resumeText = useDataStore((s) => s.resumeText);
-  const apiKey = useSettingsStore((s) => s.config.model.apiKey);
+  const hasKey = useSettingsStore((s) => hasModelApiKey(s.config.model));
 
   // 题库摘要：配置页要能一眼看出「这场有没有题库参与、有多少题可用」
   const bankList = useBankStore((s) => s.banks);
@@ -178,7 +179,6 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   const prefetchedRef = useRef<Set<string>>(new Set());
   const startRef = useRef<number>(Date.now());
 
-  const hasKey = Boolean(String(apiKey || '').trim());
   const speechReady = Boolean(speech?.tts?.installed);
   const cloneReady = Boolean(speech?.clone?.installed);
   const asrReady = Boolean(speech?.asr?.installed);

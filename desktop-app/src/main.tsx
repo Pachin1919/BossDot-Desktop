@@ -4,6 +4,7 @@ import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { getTheme } from './theme';
 import { useAppStore } from './store/useAppStore';
+import { useSettingsStore } from './store/useSettingsStore';
 import { useRuntimeLogsStore } from './store/useRuntimeLogsStore';
 import { useEffectiveTheme } from './lib/useEffectiveTheme';
 import './index.css';
@@ -89,6 +90,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  *      否则首帧会用 localStorage 的旧队列画出 0 条、再跳变）
  */
 async function boot(): Promise<void> {
+  await useSettingsStore.getState().initializeModelKeys();
   let migrationError: string | undefined;
   try {
     const { migrateQueueFromLocalStorageIfNeeded } = await import('./lib/bossclaw/queueMigrate');

@@ -19,6 +19,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:cloak-page-new', 'jc:cloak-page-reload', 'jc:cloak-page-send', 'jc:cloak-start', 'jc:cloak-status',
   'jc:cloak-status-changed', 'jc:cloak-stop',
   'jc:fetch-url', 'jc:llm-proxy', 'jc:material-pick', 'jc:material-read', 'jc:open-external',
+  'jc:model-key-set', 'jc:model-keys-clear', 'jc:model-keys-migrate', 'jc:model-keys-status',
   'jc:mock-interview-clear', 'jc:mock-interview-clear-sessions', 'jc:mock-interview-delete',
   'jc:mock-interview-export', 'jc:mock-interview-list', 'jc:mock-interview-read',
   'jc:mock-interview-usage', 'jc:mock-interview-write',
@@ -126,7 +127,11 @@ const api = {
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
-  llmProxy: (url, payload, apiKey, timeoutMs, method) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs, method),
+  llmProxy: (url, payload, credential, timeoutMs, method) => ipcRenderer.invoke('jc:llm-proxy', url, payload, credential, timeoutMs, method),
+  modelKeysStatus: () => ipcRenderer.invoke('jc:model-keys-status'),
+  modelKeysMigrate: (entries) => ipcRenderer.invoke('jc:model-keys-migrate', entries),
+  modelKeySet: (provider, origin, key) => ipcRenderer.invoke('jc:model-key-set', provider, origin, key),
+  modelKeysClear: () => ipcRenderer.invoke('jc:model-keys-clear'),
 
   // ===== 模拟面试（会话文件存于 <userData>/mock-interview/，不进 localStorage）=====
   // 列表 / 读取 / 写入 / 删除 / 清空 / 导出 / 目录占用。写入带 seq，主进程拒绝更旧的迟到包。

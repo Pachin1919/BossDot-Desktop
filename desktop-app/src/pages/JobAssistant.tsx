@@ -7,6 +7,8 @@
  * - 历史定制记录（本地最近 HISTORY_MAX 条，可载入/删除）
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { hasModelApiKey } from '@/lib/bossclaw/providerPresets';
+import { withoutModelSecrets } from '../../electron/settingsSecrets.mjs';
 import {
   Alert, Avatar, Button, Card, Checkbox, Divider, Form, Input, List, Modal, Progress, Radio, Select, Space, Tag, Tooltip, Typography, Upload, message,
 } from 'antd';
@@ -471,7 +473,7 @@ export default function JobAssistant() {
   const canGenerate = Boolean(jobTitle.trim() && jobDesc.trim() && hasResume);
 
   // 实时匹配度预览：优先 AI（工作台导入分）；AI 未配置时回退本地确定性计算（不调用 AI）
-  const aiConfigured = Boolean(config.model?.apiKey);
+  const aiConfigured = hasModelApiKey(config.model);
   const liveMatch = useMemo(() => {
     if (!jobDesc.trim() || !hasResume) return null;
     const { keywords, weights } = extractJdKeywords(jobDesc, profile);
@@ -508,11 +510,10 @@ export default function JobAssistant() {
     const write = window.electron?.tailorCheckpointWrite;
     if (!read || !write) return generate();
     const { runTailorWorkflow, tailorRunId } = await import('@/lib/bossclaw/tailorWorkflow');
-    const { apiKey, ...modelSettings } = config.model;
     const runId = await tailorRunId({
       job, resumeText, profile, extraMaterials, greeting, supplements: iteration?.supplements || [],
-      model: modelSettings, configured: Boolean(apiKey),
-      ...(!apiKey && isAgentOnline() ? { agent: true } : {}),
+      model: withoutModelSecrets(config.model), configured: aiConfigured,
+      ...(!aiConfigured && isAgentOnline() ? { agent: true } : {}),
     });
     return runTailorWorkflow({ read, write }, runId, generate);
   };
@@ -681,7 +682,7 @@ export default function JobAssistant() {
             <Button type="text" disabled={generating || exporting} onClick={() => setBatchItems([])}>关闭批量列表</Button>
           </Space>
           {!hasResume && <Alert type="warning" message="请先在简历中心上传简历并生成职业画像" />}
-          {!config.model?.apiKey && <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>未配置模型 API。Agent 在线时由 Agent 生成，否则展示本地预览。</Text>}
+          {!aiConfigured && <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>未配置模型 API。Agent 在线时由 Agent 生成，否则展示本地预览。</Text>}
           <List size="small" dataSource={batchItems} pagination={batchItems.length > 10 ? { pageSize: 10, showSizeChanger: false } : false}
             renderItem={(item) => (
               <List.Item actions={[
@@ -777,7 +778,7 @@ export default function JobAssistant() {
               <Text type="warning" style={{ fontSize: 12 }}>未解析简历：请先到「简历中心」上传并生成职业画像</Text>
             )}
           </Space>
-          {!config.model?.apiKey && (
+          {!aiConfigured && (
             <Text type="secondary" style={{ fontSize: 12 }}>
               Agent 在线时可直接生成。也可在「设置 → AI / LLM 配置」接入模型 API。
             </Text>
