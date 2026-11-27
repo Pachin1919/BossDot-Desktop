@@ -13,6 +13,7 @@ BossDot 沿用 BossClaw 的 Electron 主进程、React 和 TypeScript 界面、�
 | 任务可见性 | MCP 搜索可写入任务记录，日志显示成功或平台错误。对队列岗位运行分析时，将结果写回原岗位，并保留已有招呼草稿。岗位仍可由用户逐条审核。 | [控制运行时](desktop-app/src/lib/controlRuntime.ts) |
 | 简历定制 | 复用原定制页和生成入口。逐句核对摘录、来源和事实，来源或复检不通过时保留预览。LangGraph 管理生成和验证节点，SQLite 保存检查点。支持 DOCX 与 PDF 导出。 | [证据检查](desktop-app/src/lib/bossclaw/tailorEvidence.ts) · [LangGraph](desktop-app/src/lib/bossclaw/tailorWorkflow.ts) · [导出与恢复回归](desktop-app/scripts/tailor-artifact-regression.mjs) |
 | 模型接入 | OpenAI 官方端点使用 Responses API，兼容服务继续使用各自的协议。通过 Electron 网络栈读取系统代理，按端点取模型目录，支持搜索选择、权限和配额诊断。模型能力决定哪些控件可编辑。 | [服务商预设](desktop-app/src/lib/bossclaw/providerPresets.ts) · [请求适配](desktop-app/src/lib/bossclaw/llm.ts) · [设置页](desktop-app/src/pages/Settings.tsx) |
+| 模型 API Key 安全存储 | 使用 Electron `safeStorage` 在本机加密保存服务商 API Key；已有设置中的明文 Key 在成功迁移后从设置中清理。备份和导出不包含密钥，模型请求由 Electron 主进程读取密钥并代理。 | [加密存储](desktop-app/electron/modelKeys.cjs) · [旧设置迁移](desktop-app/src/lib/modelCredentials.ts) · [备份脱敏](desktop-app/electron/settingsSecrets.mjs) |
 | Windows 桌面体验 | 使用独立的应用标识、图标和本机数据目录。更新绿色主题、导航和状态提示。保留原应用的 Skills 勾选与导入功能。 | [应用标识](desktop-app/resources/app-identity.json) · [主题](desktop-app/src/index.polish.css) · [Skills](desktop-app/src/lib/bossclaw/skills.ts) |
 
 ## 从源码构建
